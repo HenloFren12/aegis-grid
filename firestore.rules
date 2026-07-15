@@ -2,53 +2,15 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     
-    // Helper Functions
-    function isAuthenticated() { 
-      return request.auth != null; 
-    }
-    
-    function isStaffOrOrganizer() { 
-      return isAuthenticated() && request.auth.token.role in ['staff', 'organizer']; 
-    }
-    
-    function isOrganizer() { 
-      return isAuthenticated() && request.auth.token.role == 'organizer'; 
-    }
-
-    // PILLAR 3: SOS Trigger
-    // Fans can write (create), but only Staff/Organizers can read or resolve.
+    // 1. Allow the app to save Fan Reports
     match /reports/{reportId} {
-      allow create: if true; 
-      allow read, update, delete: if isStaffOrOrganizer();
+      allow read, write: if true;
     }
-
-    // PILLAR 2: Fusion Queue
-    // Staff can read the queue and update status to 'dispatched'.
-    // Deletions and creations are handled entirely by the Cloud Function pipeline.
+    
+    // 2. Allow the Option B Bypass to save Incidents
     match /incidents/{incidentId} {
-      allow read, update: if isStaffOrOrganizer();
-      allow create, delete: if false; 
+      allow read, write: if true;
     }
-
-    // PILLAR 1: Foresight Engine
-    // Strictly read-only for the client. The Python/Node microservice 
-    // pushes sensor updates here.
-    match /gates/{gateId} {
-      allow read: if isStaffOrOrganizer();
-      allow write: if false; 
-    }
-
-    // Responder routing state
-    match /responders/{responderId} {
-      allow read, update: if isStaffOrOrganizer();
-      allow create, delete: if false;
-    }
-
-    // Compliance / Jury Test Surface
-    // Strict append-only log, visible only to the highest permission tier.
-    match /auditLog/{entryId} {
-      allow read: if isOrganizer();
-      allow write: if false; 
-    }
+    
   }
 }

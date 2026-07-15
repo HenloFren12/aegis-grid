@@ -1,32 +1,55 @@
-/**
- * Import function triggers from their respective submodules:
- *
- * import {onCall} from "firebase-functions/v2/https";
- * import {onDocumentWritten} from "firebase-functions/v2/firestore";
- *
- * See a full list of supported triggers at https://firebase.google.com/docs/functions
- */
+import { onDocumentCreated } from "firebase-functions/v2/firestore";
+import * as admin from "firebase-admin";
+import * as logger from "firebase-functions/logger"; // <-- We import the official logger here
 
-import {setGlobalOptions} from "firebase-functions";
-import {onRequest} from "firebase-functions/https";
-import * as logger from "firebase-functions/logger";
+admin.initializeApp();
+const db = admin.firestore();
 
-// Start writing functions
-// https://firebase.google.com/docs/functions/typescript
+export const onReportCreate = onDocumentCreated("reports/{reportId}", async (event) => {
+  const snapshot = event.data;
+  if (!snapshot) {
+    logger.error("No snapshot data available."); // <-- ESLint loves this
+    return;
+  }
 
-// For cost control, you can set the maximum number of containers that can be
-// running at the same time. This helps mitigate the impact of unexpected
-// traffic spikes by instead downgrading performance. This limit is a
-// per-function limit. You can override the limit for each function using the
-// `maxInstances` option in the function's options, e.g.
-// `onRequest({ maxInstances: 5 }, (req, res) => { ... })`.
-// NOTE: setGlobalOptions does not apply to functions using the v1 API. V1
-// functions should each use functions.runWith({ maxInstances: 10 }) instead.
-// In the v1 API, each function can only serve one request per container, so
-// this will be the maximum concurrent request count.
-setGlobalOptions({ maxInstances: 10 });
+  const reportData = snapshot.data();
+  if (!reportData) {
+    logger.error("Snapshot data is empty."); 
+    return;
+  }
 
-// export const helloWorld = onRequest((request, response) => {
-//   logger.info("Hello logs!", {structuredData: true});
-//   response.send("Hello from Firebase!");
-// });
+  const reportId = event.params.reportId;
+  logger.info(`New report detected: ${reportId}. Processing into incident queue...`); 
+
+  // Safely extract properties with default fallbacks
+  const category = (reportData.category as string) || "other";
+  const lat = (reportData.lat as number) || 0;
+  const lng = (reportData.lng as number) || 0;
+
+  const incidentRef = db.collection("incidents").doc(`inc_${reportId}`);
+  
+  const incidentPayload = {
+    id: incidentRef.id,
+    severity: category === "medical" || category === "security" ? 3 : 1,
+    confidence: 100,
+    isSingleEvent: true,
+    reasoningTrace: `System automatically generated incident from fan report in category: ${category}`,
+    status: "open",
+    assignedResponderId: null,
+    centroid: { lat, lng },
+    ageSec: 0,
+    timestampMs: Date.now()
+  };
+
+  // Write to the incidents collection
+  await incidentRef.set(incidentPayload);
+  
+  // Write trace to the Audit Log
+  await db.collection("auditLog").add({
+    timestampMs: Date.now(),
+    action: "INCIDENT_CREATED",
+    payload: { incidentId: incidentRef.id, sourceReportId: reportId }
+  });
+
+  logger.info(`Incident ${incidentRef.id} successfully generated and logged.`);
+});
