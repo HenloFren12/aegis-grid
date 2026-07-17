@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../../config/firebase';
-import { MapContainer, TileLayer, CircleMarker, Popup, Polyline } from 'react-leaflet';
+// CHANGE 1: We added Tooltip to this import list below
+import { MapContainer, TileLayer, CircleMarker, Popup, Polyline, Tooltip } from 'react-leaflet';
 import '../../styles/riskPalette.css';
 
 // Central Command Post Location (Where security is dispatched from)
@@ -118,12 +119,16 @@ export default function IncidentDetail() {
               <Popup>Command Post (Dispatch)</Popup>
             </CircleMarker>
 
-            {/* The Tactical Routing Line */}
+            {/* CHANGE 2: We wrapped the Tooltip inside your existing Polyline */}
             <Polyline 
               // @ts-ignore - Leaflet types can be strict with coordinate arrays
               positions={routingPath} 
               pathOptions={{ color: '#2196f3', weight: 4, dashArray: '10, 10' }} 
-            />
+            >
+              <Tooltip sticky permanent direction="center" className="eta-tooltip">
+                <strong style={{ color: '#1565c0', fontSize: '1.1rem' }}>ETA: 3 Mins</strong>
+              </Tooltip>
+            </Polyline>
           </MapContainer>
         </div>
 

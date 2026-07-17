@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { collection, query, onSnapshot, where } from 'firebase/firestore';
+import { collection, query, onSnapshot, where, addDoc } from 'firebase/firestore';
 import { db } from '../../config/firebase';
 import VenueMap from './VenueMap';
 import IncidentQueue from './IncidentQueue';
@@ -29,6 +29,19 @@ export default function Dashboard() {
     };
   }, []);
 
+  const triggerCrisis = async () => {
+    const reportsRef = collection(db, 'reports');
+    const baseLat = 40.7125;
+    const baseLng = -74.0055; // Section 100s Location
+    
+    // Inject 3 reports simultaneously to force the AI to cluster and escalate severity
+    await addDoc(reportsRef, { category: 'medical', text: 'Someone fainted in the crowd!', lat: baseLat, lng: baseLng, timestampMs: Date.now(), source: 'fan', geofenceOk: true });
+    await addDoc(reportsRef, { category: 'security', text: 'People are pushing, it is getting dangerous. People are trapped.', lat: baseLat + 0.0001, lng: baseLng, timestampMs: Date.now() + 1000, source: 'fan', geofenceOk: true });
+    await addDoc(reportsRef, { category: 'medical', text: 'Need medics, crush at section 100', lat: baseLat, lng: baseLng - 0.0001, timestampMs: Date.now() + 2000, source: 'fan', geofenceOk: true });
+    
+    alert('Crisis injected! Watch the Foresight AI fuse these reports in real-time.');
+  };
+
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 450px', gap: '1.5rem', padding: '1.5rem', height: '100vh', backgroundColor: '#121212', color: 'white', fontFamily: 'system-ui', boxSizing: 'border-box' }}>
       
@@ -37,6 +50,11 @@ export default function Dashboard() {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h1 style={{ margin: 0, fontSize: '1.8rem' }}>Aegis Command Center</h1>
           <div style={{ display: 'flex', gap: '1rem' }}>
+            
+            <button onClick={triggerCrisis} style={{ background: '#ff9800', color: 'black', padding: '0.5rem 1rem', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>
+              ⚠️ Simulate Crisis
+            </button>
+
             <button onClick={() => navigate('/upload')} style={{ background: '#333', color: 'white', padding: '0.5rem 1rem', border: '1px solid #444', borderRadius: '4px', cursor: 'pointer' }}>
               Data Ingestion
             </button>
