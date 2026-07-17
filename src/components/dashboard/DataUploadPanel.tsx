@@ -1,135 +1,115 @@
-import { useState } from 'react';
-import { collection, doc, setDoc } from 'firebase/firestore';
+import { useState, useRef } from 'react';
+import { doc, setDoc } from 'firebase/firestore';
 import { db } from '../../config/firebase';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import Papa from 'papaparse';
 
-const STADIUM_GATES: Record<string, { lat: number, lng: number }> = {
-  'North Gate': { lat: 40.7130, lng: -74.0060 },
-  'South Gate': { lat: 40.7115, lng: -74.0060 },
-  'East Gate': { lat: 40.7124, lng: -74.0050 },
-  'West Gate': { lat: 40.7124, lng: -74.0070 }
-};
-
-// 🛑 PASTE YOUR AQ. GEMINI API KEY HERE 🛑
-const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY; 
-const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+interface ExpectedCSVRow {
+  gateId: string;
+  currentCount: string;
+  capacity: string;
+  previousCount: string;
+  secondsSinceLastReading: string;
+}
 
 export default function DataUploadPanel() {
-  const [gate, setGate] = useState('North Gate');
-  const [density, setDensity] = useState(30);
-  const [isSimulating, setIsSimulating] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const addLog = (msg: string) => setLogs(prev => [msg, ...prev]);
 
-  const triggerSensorReading = async () => {
-    setIsSimulating(true);
-    addLog(`[SENSOR] Transmitting ${gate} density: ${density}%`);
+  const processFile = (file: File) => {
+    setIsProcessing(true);
+    addLog(`[SYSTEM] Initiating parse for: ${file.name}`);
 
-    try {
-      const readingId = `sensor_${Date.now()}`;
-      
-      if (density >= 70) {
-        addLog(`[SYSTEM] HIGH DENSITY DETECTED (${density}%). Booting AI Reasoning Model...`);
-        
-        let aiSeverity = 4;
-        let aiActionPlan = "";
+    Papa.parse<ExpectedCSVRow>(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: async (results) => {
+        addLog(`[SUCCESS] Parsed ${results.data.length} rows. Validating schema...`);
+        let successCount = 0;
+        let errorCount = 0;
 
-        try {
-          // Attempt 1: Call Google's AI
-          const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-          const prompt = `You are an AI crowd-control expert monitoring a stadium. 
-          The ${gate} currently has a crowd density of ${density}%. 
-          This is dangerously high and risks a crowd crush.
-          1. Determine a severity level from 3 to 5.
-          2. Provide a 1-sentence action plan to redirect the crowd and prevent injury.
-          Respond STRICTLY in JSON: {"severity": 4, "actionPlan": "Open overflow lanes immediately."}`;
+        for (const [index, row] of results.data.entries()) {
+          try {
+            // 1. Strict Schema Validation
+            if (!row.gateId || !row.currentCount || !row.capacity) {
+              throw new Error(`Missing required columns in row ${index + 1}`);
+            }
 
-          const result = await model.generateContent(prompt);
-          const aiResponseText = result.response.text();
-          const cleanJson = aiResponseText.replace(/```json/g, '').replace(/```/g, '').trim();
-          const aiAnalysis = JSON.parse(cleanJson);
-          
-          aiSeverity = aiAnalysis.severity;
-          aiActionPlan = `[GEMINI AI] ${aiAnalysis.actionPlan}`;
-          addLog(`[SUCCESS] AI Action Plan Generated!`);
-          
-        } catch (aiError: any) {
-          // ATTEMPT 2: THE BULLETPROOF FALLBACK
-          // If Google has a 503 server outage, we use this local fallback so the demo never breaks!
-          addLog(`[WARNING] Google API Overloaded (${aiError.status || 503}). Using Local Fallback AI...`);
-          aiSeverity = 4;
-          aiActionPlan = `[FALLBACK AI] Critical crowd crush risk. Open overflow lanes and dispatch crowd control team to redirect traffic immediately.`;
+            const capacity = Number(row.capacity);
+            if (capacity <= 0) throw new Error(`Invalid capacity in row ${index + 1}`);
+
+            const payload = {
+              gateId: row.gateId.trim(),
+              currentCount: Number(row.currentCount),
+              capacity: capacity,
+              previousCount: Number(row.previousCount) || 0,
+              secondsSinceLastReading: Number(row.secondsSinceLastReading) || 60,
+              lastUpdated: Date.now()
+            };
+
+            // 2. Write to Firestore (This triggers your backend AI Cloud Function!)
+            const gateRef = doc(db, 'gates', payload.gateId);
+            await setDoc(gateRef, payload, { merge: true });
+            
+            successCount++;
+          } catch (err: any) {
+            errorCount++;
+            addLog(`[ROW ERROR] ${err.message}`);
+          }
         }
 
-        // Push the incident to the live Command Center (this happens no matter what!)
-        const incidentRef = doc(collection(db, 'incidents'), readingId);
-        await setDoc(incidentRef, {
-          id: readingId,
-          severity: aiSeverity,
-          confidence: 99,
-          isSingleEvent: false, 
-          reasoningTrace: `[CROWD AI] ${gate} at ${density}% capacity. ${aiActionPlan}`,
-          status: 'open',
-          assignedResponderId: null,
-          centroid: STADIUM_GATES[gate],
-          ageSec: 0,
-          timestampMs: Date.now()
-        });
-
-        addLog(`[SYSTEM] Alert broadcasted to Command Center Dashboard.`);
-      } else {
-        addLog(`[SYSTEM] Density is safe (${density}%). AI reasoning skipped to save compute costs.`);
+        addLog(`[COMPLETE] Ingestion finished. ${successCount} processed, ${errorCount} rejected.`);
+        setIsProcessing(false);
+      },
+      error: (error) => {
+        addLog(`[FATAL ERROR] CSV Parsing failed: ${error.message}`);
+        setIsProcessing(false);
       }
+    });
+  };
 
-    } catch (error: any) {
-      addLog(`[FATAL ERROR] ${error.message}`);
-    } finally {
-      setIsSimulating(false);
+  const handleUploadClick = () => {
+    const file = fileInputRef.current?.files?.[0];
+    if (file) {
+      processFile(file);
+    } else {
+      addLog("[WARNING] Please select a CSV file first.");
     }
   };
 
   return (
-    <div style={{ padding: '2rem', fontFamily: 'system-ui', maxWidth: '800px', margin: '0 auto' }}>
-      <h1>IoT Gate Sensor Simulator</h1>
-      <p style={{ color: '#666' }}>Inject test data to simulate crowd density spikes and trigger Phase 4 AI routing.</p>
+    <div style={{ padding: '2rem', fontFamily: 'system-ui', maxWidth: '800px', margin: '0 auto', color: 'white' }}>
+      <h2>Stadium Data Ingestion Engine</h2>
+      <p style={{ color: '#aaa' }}>
+        Upload a CSV containing live gate readings. Valid rows are written to Firestore, instantly triggering the AI Foresight Engine for cross-gate reasoning.
+      </p>
 
-      <div style={{ background: '#f5f5f5', padding: '2rem', borderRadius: '8px', marginBottom: '2rem' }}>
-        <div style={{ display: 'grid', gap: '1.5rem' }}>
-          
-          <div>
-            <label style={{ fontWeight: 'bold', display: 'block', marginBottom: '0.5rem' }}>Select Stadium Sensor</label>
-            <select value={gate} onChange={e => setGate(e.target.value)} style={{ padding: '0.75rem', width: '100%' }}>
-              {Object.keys(STADIUM_GATES).map(g => <option key={g} value={g}>{g}</option>)}
-            </select>
-          </div>
-
-          <div>
-            <label style={{ fontWeight: 'bold', display: 'block', marginBottom: '0.5rem' }}>
-              Crowd Density: <span style={{ color: density >= 70 ? 'red' : 'green' }}>{density}%</span>
-            </label>
-            <input 
-              type="range" min="0" max="100" value={density} 
-              onChange={e => setDensity(Number(e.target.value))}
-              style={{ width: '100%', cursor: 'pointer' }} 
-            />
-            <small style={{ color: '#666' }}>AI reasoning is only triggered at 70% or higher (Moderate+).</small>
-          </div>
-
+      <div style={{ background: '#1e1e1e', padding: '2rem', borderRadius: '8px', marginBottom: '2rem' }}>
+        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+          <input 
+            type="file" 
+            accept=".csv" 
+            ref={fileInputRef}
+            style={{ padding: '0.5rem', background: '#2a2a2a', color: 'white', border: '1px solid #444', borderRadius: '4px', flexGrow: 1 }}
+          />
           <button 
-            onClick={triggerSensorReading} disabled={isSimulating}
-            style={{ 
-              background: density >= 70 ? '#d32f2f' : '#2e7d32', color: 'white', 
-              padding: '1rem', border: 'none', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer' 
-            }}
+            onClick={handleUploadClick} 
+            disabled={isProcessing}
+            style={{ background: '#1976d2', color: 'white', padding: '0.75rem 1.5rem', border: 'none', borderRadius: '4px', fontWeight: 'bold', cursor: isProcessing ? 'wait' : 'pointer' }}
           >
-            {isSimulating ? 'Transmitting...' : 'TRANSMIT SENSOR DATA'}
+            {isProcessing ? 'Processing...' : 'UPLOAD & INGEST'}
           </button>
+        </div>
+        
+        <div style={{ marginTop: '1rem', fontSize: '0.85rem', color: '#888' }}>
+          <strong>Required CSV Headers:</strong> gateId, currentCount, capacity, previousCount, secondsSinceLastReading
         </div>
       </div>
 
-      <div style={{ background: 'black', color: '#00ff00', padding: '1rem', borderRadius: '8px', height: '250px', overflowY: 'auto', fontFamily: 'monospace' }}>
-        {logs.length === 0 ? <p>Waiting for sensor input...</p> : logs.map((log, i) => (
+      <div style={{ background: 'black', color: '#00ff00', padding: '1rem', borderRadius: '8px', height: '300px', overflowY: 'auto', fontFamily: 'monospace' }}>
+        {logs.length === 0 ? <p style={{ color: '#555' }}>System ready. Awaiting data payload...</p> : logs.map((log, i) => (
           <div key={i} style={{ marginBottom: '0.5rem' }}>{log}</div>
         ))}
       </div>

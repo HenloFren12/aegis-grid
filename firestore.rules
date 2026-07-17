@@ -2,15 +2,32 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     
-    // 1. Allow the app to save Fan Reports
+    // 1. GATES: Allow logged-in staff to upload CSV data
+    match /gates/{gateId} {
+      allow read, write: if request.auth != null; 
+    }
+
+    // 2. REPORTS: Allow ANYONE (fans) to submit an SOS. Staff can read/manage.
     match /reports/{reportId} {
-      allow read, write: if true;
+      allow create: if true;                 
+      allow read, update, delete: if request.auth != null; 
     }
-    
-    // 2. Allow the Option B Bypass to save Incidents
+
+    // 3. INCIDENTS: ONLY the backend creates these. Staff can only read/update.
     match /incidents/{incidentId} {
-      allow read, write: if true;
+      allow read, update, delete: if request.auth != null;
+      allow create: if false; 
     }
-    
+
+    // 4. RESPONDERS: Staff only
+    match /responders/{responderId} {
+      allow read, write: if request.auth != null; 
+    }
+
+    // 5. AUDIT LOG: Read-only for staff. Written by backend.
+    match /auditLog/{entryId} {
+      allow read: if request.auth != null;
+      allow write: if false;                 
+    }
   }
 }

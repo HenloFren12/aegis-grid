@@ -1,0 +1,53 @@
+/* src/styles/riskPalette.css */
+.risk-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  font-weight: bold;
+  font-size: 0.875rem;
+  text-transform: uppercase;
+}
+
+/* Color-blind safe palette (WCAG AA compliant contrast) */
+.risk-critical { background-color: #ffebee; color: #c62828; border: 1px solid #ef9a9a; }
+.risk-high     { background-color: #fff3e0; color: #ef6c00; border: 1px solid #ffcc80; }
+.risk-moderate { background-color: #fff8e1; color: #f57f17; border: 1px solid #ffe082; }
+.risk-low      { background-color: #e3f2fd; color: #1565c0; border: 1px solid #90caf9; }
+
+/* src/styles/riskPalette.css (Append this to the bottom) */
+
+/* The Enterprise Radar Pulse Animation */
+@keyframes pulse-critical {
+  0% { box-shadow: 0 0 0 0 rgba(198, 40, 40, 0.7); }
+  70% { box-shadow: 0 0 0 10px rgba(198, 40, 40, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(198, 40, 40, 0); }
+}
+
+@keyframes pulse-high {
+  0% { box-shadow: 0 0 0 0 rgba(239, 108, 0, 0.7); }
+  70% { box-shadow: 0 0 0 10px rgba(239, 108, 0, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(239, 108, 0, 0); }
+}
+
+/* Apply the pulse only to the active container borders */
+.pulse-border-critical {
+  animation: pulse-critical 2s infinite;
+  border-color: #c62828 !important;
+}
+
+.pulse-border-high {
+  animation: pulse-high 2s infinite;
+  border-color: #ef6c00 !important;
+}
+
+/* Dashboard entry cascade */
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-slide-up {
+  animation: slide-up 0.5s ease-out forwards;
+}

@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { collection, doc, setDoc } from 'firebase/firestore';
 import { db } from '../../config/firebase';
-import { GoogleGenerativeAI } from '@google/generative-ai'; // The new official SDK
 
 interface ReportDocument {
   id: string;
@@ -22,10 +21,6 @@ const STADIUM_ZONES: Record<string, { lat: number, lng: number }> = {
   'Section 100s': { lat: 40.7125, lng: -74.0055 },
   'Section 200s': { lat: 40.7125, lng: -74.0065 },
 };
-
-// 🛑 PASTE YOUR AQ. GEMINI API KEY HERE 🛑
-const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY; 
-const genAI = new GoogleGenerativeAI(GEMINI_API_KEY); // Initializes the AI securely
 
 export default function SOSScreen() {
   const [category, setCategory] = useState<Category | null>(null);
@@ -51,49 +46,9 @@ export default function SOSScreen() {
         geofenceOk: isGPS,
       };
 
+      // EXACT FIX: We ONLY write to the reports collection. 
+      // The Cloud Function takes over from here.
       await setDoc(newReportDoc, payload);
-
-      // Default fallback just in case
-      let aiSeverity = category === 'medical' || category === 'security' ? 3 : 1;
-      let aiActionPlan = `System generated incident from fan report in category: ${category}`;
-
-      try {
-        console.log("Contacting Gemini AI via official SDK...");
-        const model = genAI.getGenerativeModel({ model: "gemini-3.5-flash" });
-        const prompt = `You are a stadium security triage AI. 
-        A fan just reported an emergency. Category: "${category}". Additional details: "${description || 'None provided'}". 
-        1. Determine the severity level from 1 (lowest) to 5 (critical). 
-        2. Provide a short, 1-sentence action plan for the security team.
-        Respond STRICTLY in JSON format looking exactly like this: {"severity": 3, "actionPlan": "Dispatch medical team immediately."}`;
-
-        const result = await model.generateContent(prompt);
-        const aiResponseText = result.response.text();
-        
-        // Clean the response
-        const cleanJson = aiResponseText.replace(/```json/g, '').replace(/```/g, '').trim();
-        const aiAnalysis = JSON.parse(cleanJson);
-        
-        aiSeverity = aiAnalysis.severity;
-        aiActionPlan = `[GEMINI AI] ${aiAnalysis.actionPlan}`;
-        console.log("AI Triage Complete!");
-      } catch (aiError) {
-        console.error("Gemini AI failed:", aiError);
-      }
-
-      // Generate the AI-Enhanced Incident
-      const incidentRef = doc(collection(db, 'incidents'), `inc_${newReportDoc.id}`);
-      await setDoc(incidentRef, {
-        id: incidentRef.id,
-        severity: aiSeverity,
-        confidence: 95,
-        isSingleEvent: true,
-        reasoningTrace: aiActionPlan,
-        status: 'open',
-        assignedResponderId: null,
-        centroid: { lat, lng },
-        ageSec: 0,
-        timestampMs: Date.now()
-      });
 
       setSuccess(true);
     } catch (err: any) {
@@ -154,6 +109,7 @@ export default function SOSScreen() {
                 padding: '1rem',
                 border: `2px solid ${category === cat ? '#d32f2f' : '#ccc'}`,
                 background: category === cat ? '#ffebee' : 'white',
+                color: category === cat ? '#d32f2f' : '#121212',
                 fontWeight: 'bold', cursor: 'pointer', textTransform: 'capitalize'
               }}
             >
@@ -181,7 +137,7 @@ export default function SOSScreen() {
           type="submit" disabled={isSubmitting}
           style={{ background: '#d32f2f', color: 'white', padding: '1rem', fontWeight: 'bold', border: 'none', cursor: 'pointer' }}
         >
-          {isSubmitting ? 'AI Analyzing & Sending...' : 'SEND SOS NOW'}
+          {isSubmitting ? 'Sending...' : 'SEND SOS NOW'}
         </button>
       </form>
     </div>
