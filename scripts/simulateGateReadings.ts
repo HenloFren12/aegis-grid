@@ -1,42 +1,246 @@
-import { initializeApp } from 'firebase/app';
-import { getFirestore, doc, setDoc } from 'firebase/firestore';
+import {
+  initializeApp,
+} from 'firebase/app';
+
+import {
+  doc,
+  getFirestore,
+  setDoc,
+} from 'firebase/firestore';
+
 import * as dotenv from 'dotenv';
 
-// Load environment variables for the standalone script
+import {
+  computeGateRisk,
+} from '../src/lib/computeGateRisk';
+
 dotenv.config();
 
-const app = initializeApp({
-  apiKey: process.env.VITE_FIREBASE_API_KEY,
-  projectId: process.env.VITE_FIREBASE_PROJECT_ID,
-});
-const db = getFirestore(app);
+const apiKey =
+  process.env
+    .VITE_FIREBASE_API_KEY;
 
-const gateIds = ['A', 'B', 'C', 'D'];
-const counts: Record<string, number> = Object.fromEntries(gateIds.map(id => [id, 200]));
+const projectId =
+  process.env
+    .VITE_FIREBASE_PROJECT_ID;
 
-console.log('Starting Gate Simulator (Ctrl+C to stop)...');
+if (!apiKey) {
+  throw new Error(
+    'Missing VITE_FIREBASE_API_KEY in the root .env file.',
+  );
+}
 
-setInterval(async () => {
+if (!projectId) {
+  throw new Error(
+    'Missing VITE_FIREBASE_PROJECT_ID in the root .env file.',
+  );
+}
+
+const app =
+  initializeApp({
+    apiKey,
+    projectId,
+  });
+
+const db =
+  getFirestore(app);
+
+const GATE_IDS = [
+  'A',
+  'B',
+  'C',
+  'D',
+] as const;
+
+const CAPACITY = 1000;
+
+const UPDATE_INTERVAL_MS =
+  5000;
+
+const counts: Record<
+  (typeof GATE_IDS)[number],
+  number
+> = {
+  A: 200,
+  B: 300,
+  C: 400,
+  D: 250,
+};
+
+async function updateGate(
+  gateId:
+    (typeof GATE_IDS)[number],
+): Promise<void> {
+  const previousCount =
+    counts[gateId];
+
+  /*
+   * Mostly positive flow with occasional
+   * decreases to simulate realistic movement.
+   */
+  const randomDelta =
+    Math.floor(
+      Math.random() * 71,
+    ) - 15;
+
+  const currentCount =
+    Math.max(
+      0,
+      previousCount +
+        randomDelta,
+    );
+
+  counts[gateId] =
+    currentCount;
+
+  const reading = {
+    gateId,
+
+    currentCount,
+
+    capacity:
+      CAPACITY,
+
+    previousCount,
+
+    secondsSinceLastReading:
+      UPDATE_INTERVAL_MS /
+      1000,
+  };
+
+  const risk =
+    computeGateRisk(
+      reading,
+    );
+
+  await setDoc(
+    doc(
+      db,
+      'gates',
+      gateId,
+    ),
+
+    {
+      ...reading,
+
+      densityPct:
+        risk.densityPct,
+
+      netFlowPerMin:
+        risk.netFlowPerMin,
+
+      timeToCriticalSec:
+        Number.isFinite(
+          risk.timeToCriticalSec,
+        )
+          ? risk.timeToCriticalSec
+          : null,
+
+      ruleBasedLevel:
+        risk.ruleBasedLevel,
+
+      riskLevel:
+        risk.ruleBasedLevel,
+
+      narrative:
+        risk.ruleBasedLevel ===
+        'LOW'
+          ? 'Gate operating normally.'
+          : 'Risk detected. Cross-gate reasoning pending.',
+
+      recommendedGate:
+        null,
+
+      reasoningStatus:
+        risk.ruleBasedLevel ===
+        'LOW'
+          ? 'not_required'
+          : 'pending',
+
+      lastUpdatedMs:
+        Date.now(),
+
+      dataSource:
+        'live_simulator',
+    },
+
+    {
+      merge: true,
+    },
+  );
+
+  console.log(
+    [
+      `Gate ${gateId}`,
+      `${risk.densityPct.toFixed(1)}%`,
+      risk.ruleBasedLevel,
+      `count=${currentCount}/${CAPACITY}`,
+    ].join(' | '),
+  );
+}
+
+async function simulatorTick(): Promise<void> {
   try {
-    // Optimization: Concurrent writes via Promise.all
-    const promises = gateIds.map(id => {
-      const previousCount = counts[id];
-      const delta = Math.floor(Math.random() * 60) - 10; 
-      counts[id] = Math.max(0, previousCount + delta);
+    await Promise.all(
+      GATE_IDS.map(
+        (gateId) =>
+          updateGate(
+            gateId,
+          ),
+      ),
+    );
 
-      return setDoc(doc(db, 'gates', id), {
-        gateId: id,
-        currentCount: counts[id],
-        capacity: 1000,
-        previousCount,
-        secondsSinceLastReading: 5,
-        timestampMs: Date.now(),
-      });
-    });
-
-    await Promise.all(promises);
-    console.log(`Tick: Updated ${gateIds.length} gates.`);
+    console.log(
+      `[${new Date().toISOString()}] Simulator tick completed.`,
+    );
   } catch (error) {
-    console.error('Simulator error:', error);
+    console.error(
+      '[SIMULATOR_ERROR]',
+      error,
+    );
   }
-}, 5000);
+}
+
+console.log(
+  'Aegis Grid gate simulator started.',
+);
+
+console.log(
+  `Updating gates every ${
+    UPDATE_INTERVAL_MS /
+    1000
+  } seconds. Press Ctrl+C to stop.`,
+);
+
+void simulatorTick();
+
+const interval =
+  setInterval(
+    () => {
+      void simulatorTick();
+    },
+
+    UPDATE_INTERVAL_MS,
+  );
+
+function shutdown(): void {
+  console.log(
+    '\nStopping Aegis Grid gate simulator...',
+  );
+
+  clearInterval(
+    interval,
+  );
+
+  process.exit(0);
+}
+
+process.on(
+  'SIGINT',
+  shutdown,
+);
+
+process.on(
+  'SIGTERM',
+  shutdown,
+);

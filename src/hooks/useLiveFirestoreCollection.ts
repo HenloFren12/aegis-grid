@@ -1,24 +1,87 @@
-import { useEffect } from 'react';
-import { collection, onSnapshot } from 'firebase/firestore';
+import {
+  useEffect,
+  useRef,
+} from 'react';
+
+import {
+  collection,
+  onSnapshot,
+} from 'firebase/firestore';
+
 import { db } from '../config/firebase';
+
+export interface LiveCollectionState<T> {
+  documents: Record<string, T>;
+  error: Error | null;
+}
 
 export function useLiveFirestoreCollection<T>(
   collectionName: string,
-  onUpdate: (docs: Record<string, T>) => void
+  onUpdate: (
+    documents: Record<string, T>,
+  ) => void,
+  onError?: (error: Error) => void,
 ): void {
+  const onUpdateRef =
+    useRef(onUpdate);
+
+  const onErrorRef =
+    useRef(onError);
+
   useEffect(() => {
-    const unsub = onSnapshot(
-      collection(db, collectionName), 
-      (snapshot) => {
-        const docs: Record<string, T> = {};
-        snapshot.forEach(doc => { 
-          docs[doc.id] = doc.data() as T; 
-        });
-        onUpdate(docs);
-      },
-      (error) => console.error(`Sync error on ${collectionName}:`, error)
-    );
-    
-    return () => unsub(); // Strict memory cleanup
-  }, [collectionName, onUpdate]);
+    onUpdateRef.current =
+      onUpdate;
+  }, [onUpdate]);
+
+  useEffect(() => {
+    onErrorRef.current =
+      onError;
+  }, [onError]);
+
+  useEffect(() => {
+    if (!collectionName.trim()) {
+      return undefined;
+    }
+
+    const unsubscribe =
+      onSnapshot(
+        collection(
+          db,
+          collectionName,
+        ),
+
+        (snapshot) => {
+          const documents: Record<
+            string,
+            T
+          > = {};
+
+          for (const document of snapshot.docs) {
+            documents[
+              document.id
+            ] = {
+              id: document.id,
+              ...document.data(),
+            } as T;
+          }
+
+          onUpdateRef.current(
+            documents,
+          );
+        },
+
+        (firestoreError) => {
+          console.error(
+            `[Firestore] Failed to synchronize "${collectionName}".`,
+            firestoreError,
+          );
+
+          onErrorRef.current?.(
+            firestoreError,
+          );
+        },
+      );
+
+    return unsubscribe;
+  }, [collectionName]);
 }

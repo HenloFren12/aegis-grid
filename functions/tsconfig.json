@@ -11,6 +11,9 @@
     "strict": true,
     "target": "es2017"
   },
+  "exclude": [
+    "src/**/*.test.ts"
+  ],
   "compileOnSave": true,
   "include": [
     "src"

@@ -1,145 +1,599 @@
-import React, { useState } from 'react';
-import { collection, doc, setDoc } from 'firebase/firestore';
+import {
+  useState,
+  type FormEvent,
+} from 'react';
+
+import {
+  addDoc,
+  collection,
+} from 'firebase/firestore';
+
 import { db } from '../../config/firebase';
 
-interface ReportDocument {
-  id: string;
-  category: 'medical' | 'security' | 'lost_child' | 'other';
+type Category =
+  | 'medical'
+  | 'security'
+  | 'lost_child'
+  | 'other';
+
+interface StadiumZone {
   lat: number;
   lng: number;
-  text: string;
-  source: 'fan' | 'staff';
-  timestampMs: number;
-  geofenceOk: boolean; 
 }
 
-type Category = ReportDocument['category'];
+const STADIUM_ZONES: Record<
+  string,
+  StadiumZone
+> = {
+  'North Gate': {
+    lat: 40.7128,
+    lng: -74.006,
+  },
 
-const STADIUM_ZONES: Record<string, { lat: number, lng: number }> = {
-  'North Gate': { lat: 40.7128, lng: -74.0060 },
-  'South Gate': { lat: 40.7120, lng: -74.0060 },
-  'Section 100s': { lat: 40.7125, lng: -74.0055 },
-  'Section 200s': { lat: 40.7125, lng: -74.0065 },
+  'South Gate': {
+    lat: 40.712,
+    lng: -74.006,
+  },
+
+  'Section 100s': {
+    lat: 40.7125,
+    lng: -74.0055,
+  },
+
+  'Section 200s': {
+    lat: 40.7125,
+    lng: -74.0065,
+  },
 };
 
 export default function SOSScreen() {
-  const [category, setCategory] = useState<Category | null>(null);
-  const [description, setDescription] = useState('');
-  const [zone, setZone] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
+  const [
+    category,
+    setCategory,
+  ] =
+    useState<Category | null>(
+      null,
+    );
 
-  const writeToDatabase = async (lat: number, lng: number, isGPS: boolean) => {
-    try {
-      const reportsRef = collection(db, 'reports');
-      const newReportDoc = doc(reportsRef);
+  const [
+    description,
+    setDescription,
+  ] = useState('');
 
-      const payload: ReportDocument = {
-        id: newReportDoc.id,
-        category: category!,
-        lat,
-        lng,
-        text: zone ? `[Manual Zone: ${zone}] ${description}` : description,
-        source: 'fan',
-        timestampMs: Date.now(),
-        geofenceOk: isGPS,
-      };
+  const [zone, setZone] =
+    useState('');
 
-      // EXACT FIX: We ONLY write to the reports collection. 
-      // The Cloud Function takes over from here.
-      await setDoc(newReportDoc, payload);
+  const [
+    isSubmitting,
+    setIsSubmitting,
+  ] = useState(false);
 
-      setSuccess(true);
-    } catch (err: any) {
-      setError(`Failed to send report: ${err.message}`);
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
+  const [error, setError] =
+    useState<string | null>(
+      null,
+    );
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!category) return setError("Please select an emergency category.");
+  const [
+    success,
+    setSuccess,
+  ] = useState(false);
 
-    setIsSubmitting(true);
-    setError(null);
+  const writeReport =
+    async (
+      lat: number,
+      lng: number,
+      geofenceOk: boolean,
+    ) => {
+      if (!category) {
+        throw new Error(
+          'Emergency category is required.',
+        );
+      }
 
-    if (zone) {
-      const fallbackCoords = STADIUM_ZONES[zone];
-      return writeToDatabase(fallbackCoords.lat, fallbackCoords.lng, false);
-    }
+      const trimmedDescription =
+        description
+          .trim()
+          .slice(0, 280);
 
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (position) => writeToDatabase(position.coords.latitude, position.coords.longitude, true),
-        () => {
-          setError("We couldn't detect your exact GPS. Please select your nearest gate or section from the dropdown.");
-          setIsSubmitting(false);
+      await addDoc(
+        collection(
+          db,
+          'reports',
+        ),
+
+        {
+          category,
+
+          lat,
+          lng,
+
+          text: zone
+            ? `[Manual Zone: ${zone}] ${
+                trimmedDescription ||
+                'Emergency assistance requested.'
+              }`
+            : trimmedDescription ||
+              'Emergency assistance requested.',
+
+          source: 'fan',
+
+          timestampMs:
+            Date.now(),
+
+          geofenceOk,
         },
-        { enableHighAccuracy: true, timeout: 10000 }
       );
-    } else {
-      setError("Your device doesn't support GPS. Please select a location from the dropdown.");
-      setIsSubmitting(false);
-    }
-  };
+    };
+
+  const submitWithCoordinates =
+    async (
+      lat: number,
+      lng: number,
+      geofenceOk: boolean,
+    ) => {
+      try {
+        await writeReport(
+          lat,
+          lng,
+          geofenceOk,
+        );
+
+        setSuccess(true);
+      } catch (submitError) {
+        console.error(
+          'SOS submission failed:',
+          submitError,
+        );
+
+        setError(
+          submitError instanceof
+            Error
+            ? `Failed to send report: ${submitError.message}`
+            : 'Failed to send the emergency report.',
+        );
+      } finally {
+        setIsSubmitting(
+          false,
+        );
+      }
+    };
+
+  const handleSubmit =
+    async (
+      event: FormEvent,
+    ) => {
+      event.preventDefault();
+
+      if (!category) {
+        setError(
+          'Please select an emergency category.',
+        );
+
+        return;
+      }
+
+      setError(null);
+      setIsSubmitting(true);
+
+      if (zone) {
+        const coordinates =
+          STADIUM_ZONES[zone];
+
+        if (!coordinates) {
+          setError(
+            'The selected stadium zone is invalid.',
+          );
+
+          setIsSubmitting(
+            false,
+          );
+
+          return;
+        }
+
+        await submitWithCoordinates(
+          coordinates.lat,
+          coordinates.lng,
+          false,
+        );
+
+        return;
+      }
+
+      if (
+        !navigator.geolocation
+      ) {
+        setError(
+          "Your device doesn't support GPS. Please select the nearest stadium zone.",
+        );
+
+        setIsSubmitting(
+          false,
+        );
+
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          void submitWithCoordinates(
+            position.coords
+              .latitude,
+
+            position.coords
+              .longitude,
+
+            true,
+          );
+        },
+
+        () => {
+          setError(
+            "We couldn't detect your location. Please select the nearest gate or stadium section.",
+          );
+
+          setIsSubmitting(
+            false,
+          );
+        },
+
+        {
+          enableHighAccuracy:
+            true,
+
+          timeout: 10_000,
+
+          maximumAge: 30_000,
+        },
+      );
+    };
 
   if (success) {
     return (
-      <div style={{ padding: '2rem', textAlign: 'center', fontFamily: 'system-ui' }}>
-        <h1 style={{ color: 'green' }}>Help is on the way.</h1>
-        <p>Your location has been sent directly to stadium security.</p>
-        <button onClick={() => window.location.reload()} style={{ marginTop: '2rem', padding: '1rem' }}>Submit Another Report</button>
-      </div>
+      <main
+        style={{
+          minHeight:
+            '100vh',
+          display: 'grid',
+          placeItems:
+            'center',
+          padding: '2rem',
+          textAlign:
+            'center',
+          fontFamily:
+            'system-ui',
+        }}
+      >
+        <div>
+          <h1
+            style={{
+              color:
+                '#2e7d32',
+            }}
+          >
+            Report sent
+            successfully.
+          </h1>
+
+          <p>
+            Stadium operations
+            have received your
+            emergency report and
+            location information.
+          </p>
+
+          <button
+            type="button"
+            onClick={() => {
+              setSuccess(false);
+              setCategory(null);
+              setDescription('');
+              setZone('');
+            }}
+            style={{
+              marginTop:
+                '1.5rem',
+              padding:
+                '1rem',
+              cursor:
+                'pointer',
+            }}
+          >
+            Submit Another
+            Report
+          </button>
+        </div>
+      </main>
     );
   }
 
   return (
-    <div style={{ maxWidth: '600px', margin: '0 auto', padding: '1rem', fontFamily: 'system-ui' }}>
-      <h1 style={{ color: '#d32f2f' }}>Emergency SOS</h1>
-      {error && <div style={{ background: '#ffebee', color: '#c62828', padding: '1rem', marginBottom: '1rem' }}>{error}</div>}
+    <main
+      style={{
+        maxWidth: '600px',
+        margin: '0 auto',
+        padding: '1rem',
+        fontFamily:
+          'system-ui',
+      }}
+    >
+      <h1
+        style={{
+          color: '#b71c1c',
+        }}
+      >
+        Emergency SOS
+      </h1>
 
-      <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
-          {(['medical', 'security', 'lost_child', 'other'] as Category[]).map((cat) => (
-            <button
-              key={cat} type="button" onClick={() => setCategory(cat)}
-              style={{
-                padding: '1rem',
-                border: `2px solid ${category === cat ? '#d32f2f' : '#ccc'}`,
-                background: category === cat ? '#ffebee' : 'white',
-                color: category === cat ? '#d32f2f' : '#121212',
-                fontWeight: 'bold', cursor: 'pointer', textTransform: 'capitalize'
-              }}
-            >
-              {cat.replace('_', ' ')}
-            </button>
-          ))}
+      <p>
+        Select the emergency
+        type and your nearest
+        stadium location. If no
+        location is selected,
+        Aegis will request your
+        device location.
+      </p>
+
+      {error && (
+        <div
+          role="alert"
+          style={{
+            background:
+              '#ffebee',
+            color: '#b71c1c',
+            padding: '1rem',
+            marginBottom:
+              '1rem',
+            border:
+              '1px solid #ef9a9a',
+          }}
+        >
+          {error}
         </div>
+      )}
 
-        <select 
-          value={zone} 
-          onChange={(e) => setZone(e.target.value)}
-          style={{ padding: '1rem', border: '1px solid #ccc' }}
+      <form
+        onSubmit={
+          handleSubmit
+        }
+        style={{
+          display: 'flex',
+          flexDirection:
+            'column',
+          gap: '1rem',
+        }}
+      >
+        <fieldset
+          style={{
+            border: 0,
+            padding: 0,
+            margin: 0,
+          }}
         >
-          <option value="">I don't know my gate (Use Auto-GPS)</option>
-          {Object.keys(STADIUM_ZONES).map(z => <option key={z} value={z}>{z}</option>)}
-        </select>
+          <legend
+            style={{
+              fontWeight:
+                'bold',
+              marginBottom:
+                '0.75rem',
+            }}
+          >
+            Emergency category
+          </legend>
 
-        <textarea
-          rows={3} placeholder="Additional details..." value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          style={{ padding: '1rem', border: '1px solid #ccc' }}
-        />
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns:
+                'repeat(2, minmax(0, 1fr))',
+              gap: '0.5rem',
+            }}
+          >
+            {(
+              [
+                'medical',
+                'security',
+                'lost_child',
+                'other',
+              ] as Category[]
+            ).map(
+              (
+                categoryOption,
+              ) => (
+                <button
+                  key={
+                    categoryOption
+                  }
+                  type="button"
+                  aria-pressed={
+                    category ===
+                    categoryOption
+                  }
+                  onClick={() =>
+                    setCategory(
+                      categoryOption,
+                    )
+                  }
+                  style={{
+                    minHeight:
+                      '48px',
+                    padding:
+                      '1rem',
 
-        <button 
-          type="submit" disabled={isSubmitting}
-          style={{ background: '#d32f2f', color: 'white', padding: '1rem', fontWeight: 'bold', border: 'none', cursor: 'pointer' }}
+                    border: `2px solid ${
+                      category ===
+                      categoryOption
+                        ? '#b71c1c'
+                        : '#777'
+                    }`,
+
+                    background:
+                      category ===
+                      categoryOption
+                        ? '#ffebee'
+                        : 'white',
+
+                    color:
+                      category ===
+                      categoryOption
+                        ? '#b71c1c'
+                        : '#121212',
+
+                    fontWeight:
+                      'bold',
+
+                    cursor:
+                      'pointer',
+
+                    textTransform:
+                      'capitalize',
+                  }}
+                >
+                  {categoryOption.replace(
+                    '_',
+                    ' ',
+                  )}
+                </button>
+              ),
+            )}
+          </div>
+        </fieldset>
+
+        <label>
+          <span
+            style={{
+              display:
+                'block',
+              fontWeight:
+                'bold',
+              marginBottom:
+                '0.4rem',
+            }}
+          >
+            Nearest location
+          </span>
+
+          <select
+            value={zone}
+            onChange={(
+              event,
+            ) =>
+              setZone(
+                event.target
+                  .value,
+              )
+            }
+            style={{
+              width: '100%',
+              minHeight:
+                '48px',
+              padding: '0.8rem',
+              border:
+                '1px solid #777',
+            }}
+          >
+            <option value="">
+              Use my current
+              location
+            </option>
+
+            {Object.keys(
+              STADIUM_ZONES,
+            ).map(
+              (
+                zoneName,
+              ) => (
+                <option
+                  key={
+                    zoneName
+                  }
+                  value={
+                    zoneName
+                  }
+                >
+                  {zoneName}
+                </option>
+              ),
+            )}
+          </select>
+        </label>
+
+        <label>
+          <span
+            style={{
+              display:
+                'block',
+              fontWeight:
+                'bold',
+              marginBottom:
+                '0.4rem',
+            }}
+          >
+            Additional details
+          </span>
+
+          <textarea
+            rows={4}
+            maxLength={280}
+            placeholder="Describe what is happening..."
+            value={
+              description
+            }
+            onChange={(
+              event,
+            ) =>
+              setDescription(
+                event.target
+                  .value,
+              )
+            }
+            style={{
+              width: '100%',
+              boxSizing:
+                'border-box',
+              padding: '1rem',
+              border:
+                '1px solid #777',
+            }}
+          />
+
+          <small>
+            {
+              description.length
+            }
+            /280 characters
+          </small>
+        </label>
+
+        <button
+          type="submit"
+          disabled={
+            isSubmitting
+          }
+          aria-busy={
+            isSubmitting
+          }
+          style={{
+            minHeight:
+              '52px',
+            background:
+              '#b71c1c',
+            color: 'white',
+            padding: '1rem',
+            fontWeight:
+              'bold',
+            border: 'none',
+            cursor:
+              isSubmitting
+                ? 'wait'
+                : 'pointer',
+          }}
         >
-          {isSubmitting ? 'Sending...' : 'SEND SOS NOW'}
+          {isSubmitting
+            ? 'Sending emergency report…'
+            : 'SEND SOS NOW'}
         </button>
       </form>
-    </div>
+    </main>
   );
 }

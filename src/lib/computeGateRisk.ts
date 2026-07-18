@@ -4,51 +4,85 @@ export interface GateReading {
   capacity: number;
   previousCount: number;
   secondsSinceLastReading: number;
-  corridorWidthM?: number;
-  isRaining?: boolean;
 }
+
+export type RiskLevel = 'LOW' | 'MODERATE' | 'HIGH' | 'CRITICAL';
 
 export interface GateRiskFeatures {
   gateId: string;
   densityPct: number;
   netFlowPerMin: number;
   timeToCriticalSec: number;
-  ruleBasedLevel: 'LOW' | 'MODERATE' | 'HIGH' | 'CRITICAL';
+  ruleBasedLevel: RiskLevel;
 }
 
-export function computeGateRisk(reading: GateReading): GateRiskFeatures {
-  const { gateId, currentCount, capacity, previousCount, secondsSinceLastReading } = reading;
+export function computeGateRisk(
+  reading: GateReading
+): GateRiskFeatures {
+  const {
+    gateId,
+    currentCount,
+    capacity,
+    previousCount,
+    secondsSinceLastReading,
+  } = reading;
 
-  if (capacity <= 0) {
-    throw new RangeError(`computeGateRisk: capacity must be positive, got ${capacity}`);
+  if (!gateId.trim()) {
+    throw new TypeError('gateId is required');
   }
 
-  const densityPct = Math.min(100, Math.max(0, (currentCount / capacity) * 100));
-
-  let netFlowPerMin = 0;
-  if (secondsSinceLastReading > 0 && secondsSinceLastReading <= 60) {
-    netFlowPerMin = ((currentCount - previousCount) / secondsSinceLastReading) * 60;
+  if (!Number.isFinite(capacity) || capacity <= 0) {
+    throw new RangeError('capacity must be a positive number');
   }
 
-  const remaining = capacity - currentCount;
-  
-  let timeToCriticalSec: number;
-  if (remaining <= 0) {
-    timeToCriticalSec = 0; // Fix: Gate is already at or past capacity
-  } else {
-    timeToCriticalSec = (netFlowPerMin > 0)
-      ? (remaining / netFlowPerMin) * 60
-      : Infinity; 
+  if (!Number.isFinite(currentCount) || currentCount < 0) {
+    throw new RangeError('currentCount must be >= 0');
   }
 
-  let ruleBasedLevel: GateRiskFeatures['ruleBasedLevel'] = 'LOW';
-  if (densityPct >= 95) {
+  if (!Number.isFinite(previousCount) || previousCount < 0) {
+    throw new RangeError('previousCount must be >= 0');
+  }
+
+  const rawDensityPct = (currentCount / capacity) * 100;
+  const densityPct = Math.min(100, Math.max(0, rawDensityPct));
+
+  const netFlowPerMin =
+    secondsSinceLastReading > 0
+      ? ((currentCount - previousCount) /
+          secondsSinceLastReading) *
+        60
+      : 0;
+
+  const remainingCapacity = Math.max(0, capacity - currentCount);
+
+  const timeToCriticalSec =
+    remainingCapacity === 0
+      ? 0
+      : netFlowPerMin > 0
+        ? (remainingCapacity / netFlowPerMin) * 60
+        : Infinity;
+
+  let ruleBasedLevel: RiskLevel = 'LOW';
+
+  if (rawDensityPct >= 95) {
     ruleBasedLevel = 'CRITICAL';
-  } else if (densityPct >= 80 || timeToCriticalSec < 300) {
+  } else if (
+    rawDensityPct >= 80 ||
+    timeToCriticalSec < 300
+  ) {
     ruleBasedLevel = 'HIGH';
-  } else if (densityPct >= 60 || timeToCriticalSec < 600) {
+  } else if (
+    rawDensityPct >= 60 ||
+    timeToCriticalSec < 600
+  ) {
     ruleBasedLevel = 'MODERATE';
   }
 
-  return { gateId, densityPct, netFlowPerMin, timeToCriticalSec, ruleBasedLevel };
+  return {
+    gateId,
+    densityPct,
+    netFlowPerMin,
+    timeToCriticalSec,
+    ruleBasedLevel,
+  };
 }
