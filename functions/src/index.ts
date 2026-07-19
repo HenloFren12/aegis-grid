@@ -1,261 +1,110 @@
-import {
-  onDocumentCreated,
-  onDocumentWritten,
-} from 'firebase-functions/v2/firestore';
-
-import * as admin from 'firebase-admin';
-
-import {
-  GoogleGenerativeAI,
-} from '@google/generative-ai';
-
-import {
-  clusterReports,
-  type IncidentCluster,
-  type RawReport,
-} from './lib/clusterReports';
-
-import {
-  computeGateRisk,
-  type GateRiskFeatures,
-} from './lib/computeGateRisk';
-
-import {
-  buildGateRiskPrompt,
-  buildSeverityPrompt,
-} from './lib/reasoningPromptBuilder';
+import {onDocumentCreated, onDocumentWritten} from "firebase-functions/v2/firestore";
+import * as admin from "firebase-admin";
+import {GoogleGenerativeAI} from "@google/generative-ai";
+import {clusterReports, type IncidentCluster, type RawReport} from "./lib/clusterReports";
+import {computeGateRisk, type GateRiskFeatures} from "./lib/computeGateRisk";
+import {buildGateRiskPrompt, buildSeverityPrompt} from "./lib/reasoningPromptBuilder";
 
 admin.initializeApp();
-
 const db = admin.firestore();
 
-type ReportCategory =
-  RawReport['category'];
+type ReportCategory = RawReport["category"];
 
-const GEMINI_API_KEY =
-  process.env.GEMINI_API_KEY ?? '';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? "";
+const GEMINI_MODEL = "gemini-1.5-flash";
+const genAI = GEMINI_API_KEY.length > 0 ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
+const REPORT_WINDOW_MS = 90_000;
 
-const GEMINI_MODEL =
-  'gemini-1.5-flash';
-
-const genAI =
-  GEMINI_API_KEY.length > 0
-    ? new GoogleGenerativeAI(
-        GEMINI_API_KEY,
-      )
-    : null;
-
-const REPORT_WINDOW_MS =
-  90_000;
-
-const CATEGORY_SEVERITY: Record<
-  ReportCategory,
-  number
-> = {
+const CATEGORY_SEVERITY: Record<ReportCategory, number> = {
   medical: 5,
   security: 4,
   lost_child: 4,
   other: 2,
 };
 
-function clamp(
-  value: number,
-  minimum: number,
-  maximum: number,
-): number {
-  return Math.min(
-    maximum,
-    Math.max(minimum, value),
-  );
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
 }
 
-function parseJsonResponse(
-  rawText: string,
-): Record<string, unknown> {
-  const cleaned = rawText
-    .replace(/```json/gi, '')
-    .replace(/```/g, '')
-    .trim();
+function parseJsonResponse(rawText: string): Record<string, unknown> {
+  const cleaned = rawText.replace(/```json/gi, "").replace(/```/g, "").trim();
+  const parsed: unknown = JSON.parse(cleaned);
 
-  const parsed: unknown =
-    JSON.parse(cleaned);
-
-  if (
-    typeof parsed !== 'object' ||
-    parsed === null ||
-    Array.isArray(parsed)
-  ) {
-    throw new Error(
-      'AI response was not a JSON object.',
-    );
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("AI response was not a JSON object.");
   }
 
-  return parsed as Record<
-    string,
-    unknown
-  >;
+  return parsed as Record<string, unknown>;
 }
 
-function normalizeCategory(
-  value: unknown,
-): ReportCategory {
-  if (
-    value === 'medical' ||
-    value === 'security' ||
-    value === 'lost_child' ||
-    value === 'other'
-  ) {
+function normalizeCategory(value: unknown): ReportCategory {
+  if (value === "medical" || value === "security" || value === "lost_child" || value === "other") {
     return value;
   }
-
-  return 'other';
+  return "other";
 }
 
-function normalizeSource(
-  value: unknown,
-): RawReport['source'] {
-  if (value === 'staff') {
-    return 'staff';
+function normalizeSource(value: unknown): RawReport["source"] {
+  if (value === "staff") {
+    return "staff";
   }
-
-  return 'fan';
+  return "fan";
 }
 
+function normalizeReport(documentId: string, data: FirebaseFirestore.DocumentData): RawReport | null {
+  const lat = Number(data.lat);
+  const lng = Number(data.lng);
+  const timestampMs = Number(data.timestampMs);
 
-function normalizeReport(
-  documentId: string,
-  data: FirebaseFirestore.DocumentData,
-): RawReport | null {
-  const lat =
-    Number(data.lat);
-
-  const lng =
-    Number(data.lng);
-
-  const timestampMs =
-    Number(data.timestampMs);
-
-  if (
-    !Number.isFinite(lat) ||
-    !Number.isFinite(lng) ||
-    !Number.isFinite(timestampMs)
-  ) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(timestampMs)) {
     return null;
   }
 
   return {
     id: documentId,
-
-    category:
-      normalizeCategory(
-        data.category,
-      ),
-
+    category: normalizeCategory(data.category),
     lat,
     lng,
-
-    text:
-      typeof data.text === 'string'
-        ? data.text
-            .trim()
-            .slice(0, 500)
-        : '',
-
-    source:
-      normalizeSource(
-        data.source,
-      ),
-
+    text: typeof data.text === "string" ? data.text.trim().slice(0, 500) : "",
+    source: normalizeSource(data.source),
     timestampMs,
   };
 }
 
-function getFallbackSeverity(
-  reports: RawReport[],
-): number {
+function getFallbackSeverity(reports: RawReport[]): number {
   let highestSeverity = 1;
-
   for (const report of reports) {
-    highestSeverity =
-      Math.max(
-        highestSeverity,
-        CATEGORY_SEVERITY[
-          report.category
-        ],
-      );
+    highestSeverity = Math.max(highestSeverity, CATEGORY_SEVERITY[report.category]);
   }
-
   return highestSeverity;
 }
 
-function getFallbackConfidence(
-  reportCount: number,
-  categoryCount: number,
-): number {
-  const reportEvidence =
-    Math.min(
-      reportCount,
-      4,
-    ) * 10;
-
-  const categoryEvidence =
-    Math.min(
-      categoryCount,
-      3,
-    ) * 5;
-
-  return clamp(
-    45 +
-      reportEvidence +
-      categoryEvidence,
-    55,
-    90,
-  );
+function getFallbackConfidence(reportCount: number, categoryCount: number): number {
+  const reportEvidence = Math.min(reportCount, 4) * 10;
+  const categoryEvidence = Math.min(categoryCount, 3) * 5;
+  return clamp(45 + reportEvidence + categoryEvidence, 55, 90);
 }
 
-async function classifyIncident(
-  cluster: IncidentCluster,
-): Promise<{
+async function classifyIncident(cluster: IncidentCluster): Promise<{
   severity: number;
   confidence: number;
   isSingleEvent: boolean;
   reasoningTrace: string;
-  reasoningSource:
-    | 'gemini'
-    | 'deterministic_fallback';
+  reasoningSource: "gemini" | "deterministic_fallback";
 }> {
-  const categories =
-    Array.from(
-      cluster.categories,
-    );
-
-  const fallbackSeverity =
-    getFallbackSeverity(
-      cluster.reports,
-    );
-
-  const fallbackConfidence =
-    getFallbackConfidence(
-      cluster.reports.length,
-      categories.length,
-    );
+  const categories = Array.from(cluster.categories);
+  const fallbackSeverity = getFallbackSeverity(cluster.reports);
+  const fallbackConfidence = getFallbackConfidence(cluster.reports.length, categories.length);
 
   const fallbackResult = {
-    severity:
-      fallbackSeverity,
-
-    confidence:
-      fallbackConfidence,
-
+    severity: fallbackSeverity,
+    confidence: fallbackConfidence,
     isSingleEvent: true,
-
     reasoningTrace:
-      cluster.reports.length === 1
-        ? 'A single emergency report was received. The incident was created immediately and remains open for corroborating evidence.'
-        : `${cluster.reports.length} spatially and temporally related reports were grouped as a probable shared incident pending operator review.`,
-
-    reasoningSource:
-      'deterministic_fallback' as const,
+      cluster.reports.length === 1 ?
+        "A single emergency report was received. The incident was created immediately and remains open for corroborating evidence." :
+        `${cluster.reports.length} spatially and temporally related reports were grouped as a probable shared incident pending operator review.`,
+    reasoningSource: "deterministic_fallback" as const,
   };
 
   if (!genAI) {
@@ -263,114 +112,35 @@ async function classifyIncident(
   }
 
   try {
-    const gateSnapshot =
-      await db
-        .collection('gates')
-        .get();
-
+    const gateSnapshot = await db.collection("gates").get();
     let nearbyGateDensity = 0;
 
-    for (
-      const gateDocument of
-      gateSnapshot.docs
-    ) {
-      const density =
-        Number(
-          gateDocument.data()
-            .densityPct,
-        );
-
-      if (
-        Number.isFinite(density)
-      ) {
-        nearbyGateDensity =
-          Math.max(
-            nearbyGateDensity,
-            density,
-          );
+    for (const gateDocument of gateSnapshot.docs) {
+      const density = Number(gateDocument.data().densityPct);
+      if (Number.isFinite(density)) {
+        nearbyGateDensity = Math.max(nearbyGateDensity, density);
       }
     }
 
-    const prompt =
-      buildSeverityPrompt(
-        cluster,
-        {
-          nearbyGateDensity,
-        },
-      );
-
-    const model =
-      genAI.getGenerativeModel({
-        model: GEMINI_MODEL,
-      });
-
-    const result =
-      await model.generateContent(
-        prompt,
-      );
-
-    const parsed =
-      parseJsonResponse(
-        result.response.text(),
-      );
-
-    const aiSeverity =
-      Number(parsed.severity);
-
-    const aiConfidence =
-      Number(parsed.confidence);
+    const prompt = buildSeverityPrompt(cluster, {nearbyGateDensity});
+    const model = genAI.getGenerativeModel({model: GEMINI_MODEL});
+    const result = await model.generateContent(prompt);
+    const parsed = parseJsonResponse(result.response.text());
+    const aiSeverity = Number(parsed.severity);
+    const aiConfidence = Number(parsed.confidence);
 
     return {
-      severity:
-        Number.isFinite(
-          aiSeverity,
-        )
-          ? clamp(
-              Math.round(
-                aiSeverity,
-              ),
-              1,
-              5,
-            )
-          : fallbackSeverity,
-
-      confidence:
-        Number.isFinite(
-          aiConfidence,
-        )
-          ? clamp(
-              Math.round(
-                aiConfidence,
-              ),
-              0,
-              100,
-            )
-          : fallbackConfidence,
-
-      isSingleEvent:
-        typeof parsed.isSingleEvent ===
-        'boolean'
-          ? parsed.isSingleEvent
-          : true,
-
+      severity: Number.isFinite(aiSeverity) ? clamp(Math.round(aiSeverity), 1, 5) : fallbackSeverity,
+      confidence: Number.isFinite(aiConfidence) ? clamp(Math.round(aiConfidence), 0, 100) : fallbackConfidence,
+      isSingleEvent: typeof parsed.isSingleEvent === "boolean" ? parsed.isSingleEvent : true,
       reasoningTrace:
-        typeof parsed.reasoning ===
-          'string' &&
-        parsed.reasoning
-          .trim()
-          .length > 0
-          ? parsed.reasoning.trim()
-          : fallbackResult.reasoningTrace,
-
-      reasoningSource:
-        'gemini',
+        typeof parsed.reasoning === "string" && parsed.reasoning.trim().length > 0 ?
+          parsed.reasoning.trim() :
+          fallbackResult.reasoningTrace,
+      reasoningSource: "gemini",
     };
   } catch (error) {
-    console.error(
-      '[AI_CLASSIFICATION_FALLBACK]',
-      error,
-    );
-
+    console.error("[AI_CLASSIFICATION_FALLBACK]", error);
     return fallbackResult;
   }
 }
@@ -389,333 +159,164 @@ async function classifyIncident(
  * an incident even when AI processing is unavailable.
  */
 
-export const onReportCreate =
-  onDocumentCreated(
-    'reports/{reportId}',
+export const onReportCreate = onDocumentCreated("reports/{reportId}", async (event) => {
+  const snapshot = event.data;
 
-    async (event) => {
-      const snapshot =
-        event.data;
+  if (!snapshot) {
+    console.error("[REPORT_CREATE] Missing Firestore snapshot.");
+    return;
+  }
 
-      if (!snapshot) {
-        console.error(
-          '[REPORT_CREATE] Missing Firestore snapshot.',
-        );
+  const newReport = normalizeReport(snapshot.id, snapshot.data());
 
-        return;
+  if (!newReport) {
+    console.error("[REPORT_REJECTED]", snapshot.id, "Invalid coordinates or timestampMs.");
+    return;
+  }
+
+  try {
+    const windowStart = newReport.timestampMs - REPORT_WINDOW_MS;
+    const windowEnd = newReport.timestampMs + REPORT_WINDOW_MS;
+
+    /*
+     * Only retrieve reports inside the
+     * relevant temporal fusion window.
+     *
+     * This prevents scanning the entire
+     * reports collection on every trigger.
+     */
+    const recentSnapshot = await db
+      .collection("reports")
+      .where("timestampMs", ">=", windowStart)
+      .where("timestampMs", "<=", windowEnd)
+      .get();
+
+    const reports: RawReport[] = [];
+
+    for (const document of recentSnapshot.docs) {
+      const normalized = normalizeReport(document.id, document.data());
+      if (normalized) {
+        reports.push(normalized);
       }
+    }
 
-      const newReport =
-        normalizeReport(
-          snapshot.id,
-          snapshot.data(),
-        );
+    /*
+     * Defensive consistency guarantee.
+     *
+     * The triggering report must always
+     * participate in fusion even if query
+     * consistency or malformed historical
+     * records cause unexpected results.
+     */
+    if (!reports.some((report) => report.id === newReport.id)) {
+      reports.push(newReport);
+    }
 
-      if (!newReport) {
-        console.error(
-          '[REPORT_REJECTED]',
-          snapshot.id,
-          'Invalid coordinates or timestampMs.',
-        );
+    /*
+     * IMPORTANT:
+     *
+     * The actual clusterReports() contract
+     * in functions/src/lib accepts:
+     *
+     * clusterReports(reports, windowMs)
+     *
+     * There is intentionally NO third
+     * distance argument here.
+     */
+    const clusters = clusterReports(reports, REPORT_WINDOW_MS);
 
-        return;
-      }
+    const activeCluster = clusters.find((cluster) =>
+      cluster.reports.some((report) => report.id === newReport.id),
+    );
 
-      try {
-        const windowStart =
-          newReport.timestampMs -
-          REPORT_WINDOW_MS;
+    if (!activeCluster) {
+      throw new Error(`No cluster generated for report ${newReport.id}.`);
+    }
 
-        const windowEnd =
-          newReport.timestampMs +
-          REPORT_WINDOW_MS;
+    const sortedReports = [...activeCluster.reports].sort(
+      (first, second) => first.timestampMs - second.timestampMs,
+    );
 
-        /*
-         * Only retrieve reports inside the
-         * relevant temporal fusion window.
-         *
-         * This prevents scanning the entire
-         * reports collection on every trigger.
-         */
-        const recentSnapshot =
-          await db
-            .collection('reports')
-            .where(
-              'timestampMs',
-              '>=',
-              windowStart,
-            )
-            .where(
-              'timestampMs',
-              '<=',
-              windowEnd,
-            )
-            .get();
+    const earliestReport = sortedReports[0];
 
-        const reports:
-          RawReport[] = [];
+    if (!earliestReport) {
+      throw new Error("Active incident cluster contained no reports.");
+    }
 
-        for (
-          const document of
-          recentSnapshot.docs
-        ) {
-          const normalized =
-            normalizeReport(
-              document.id,
-              document.data(),
-            );
+    /*
+     * Stable incident identity:
+     *
+     * All reports fused with the earliest
+     * report resolve to the same incident ID.
+     */
+    const incidentId = `inc_${earliestReport.id}`;
+    const classification = await classifyIncident(activeCluster);
 
-          if (normalized) {
-            reports.push(
-              normalized,
-            );
-          }
-        }
+    await db.collection("incidents").doc(incidentId).set(
+      {
+        id: incidentId,
+        severity: classification.severity,
+        confidence: classification.confidence,
+        isSingleEvent: classification.isSingleEvent,
+        reasoningTrace: classification.reasoningTrace,
+        reasoningSource: classification.reasoningSource,
+        status: "open",
+        assignedResponderId: null,
+        centroid: activeCluster.centroid,
+        categories: Array.from(activeCluster.categories),
+        reportIds: sortedReports.map((report) => report.id),
+        reportCount: sortedReports.length,
+        reports: sortedReports,
+        timestampMs: earliestReport.timestampMs,
+        updatedAtMs: Date.now(),
+      },
+      {merge: true},
+    );
 
-        /*
-         * Defensive consistency guarantee.
-         *
-         * The triggering report must always
-         * participate in fusion even if query
-         * consistency or malformed historical
-         * records cause unexpected results.
-         */
-        if (
-          !reports.some(
-            (report) =>
-              report.id ===
-              newReport.id,
-          )
-        ) {
-          reports.push(
-            newReport,
-          );
-        }
+    console.log(
+      "[INCIDENT_UPSERTED]",
+      incidentId,
+      `reports=${sortedReports.length}`,
+      `severity=${classification.severity}`,
+      `reasoning=${classification.reasoningSource}`,
+    );
+  } catch (error) {
+    console.error("[REPORT_PIPELINE_ERROR]", newReport.id, error);
 
-        /*
-         * IMPORTANT:
-         *
-         * The actual clusterReports() contract
-         * in functions/src/lib accepts:
-         *
-         * clusterReports(reports, windowMs)
-         *
-         * There is intentionally NO third
-         * distance argument here.
-         */
-        const clusters =
-          clusterReports(
-            reports,
-            REPORT_WINDOW_MS,
-          );
+    /*
+     * Last-resort deterministic fallback.
+     *
+     * A valid emergency report must never
+     * silently disappear because clustering
+     * or GenAI processing failed.
+     */
+    const fallbackIncidentId = `inc_${newReport.id}`;
 
-        const activeCluster =
-          clusters.find(
-            (cluster) =>
-              cluster.reports.some(
-                (report) =>
-                  report.id ===
-                  newReport.id,
-              ),
-          );
+    await db.collection("incidents").doc(fallbackIncidentId).set(
+      {
+        id: fallbackIncidentId,
+        severity: CATEGORY_SEVERITY[newReport.category],
+        confidence: 50,
+        isSingleEvent: true,
+        reasoningTrace:
+          "Emergency report received. Automated fusion processing was unavailable, so a fallback incident was created for immediate operator review.",
+        reasoningSource: "deterministic_fallback",
+        status: "open",
+        assignedResponderId: null,
+        centroid: {lat: newReport.lat, lng: newReport.lng},
+        categories: [newReport.category],
+        reportIds: [newReport.id],
+        reportCount: 1,
+        reports: [newReport],
+        timestampMs: newReport.timestampMs,
+        updatedAtMs: Date.now(),
+      },
+      {merge: true},
+    );
 
-        if (!activeCluster) {
-          throw new Error(
-            `No cluster generated for report ${newReport.id}.`,
-          );
-        }
-
-        const sortedReports = [
-          ...activeCluster.reports,
-        ].sort(
-          (first, second) =>
-            first.timestampMs -
-            second.timestampMs,
-        );
-
-        const earliestReport =
-          sortedReports[0];
-
-        if (!earliestReport) {
-          throw new Error(
-            'Active incident cluster contained no reports.',
-          );
-        }
-
-        /*
-         * Stable incident identity:
-         *
-         * All reports fused with the earliest
-         * report resolve to the same incident ID.
-         */
-        const incidentId =
-          `inc_${earliestReport.id}`;
-
-        const classification =
-          await classifyIncident(
-            activeCluster,
-          );
-
-        await db
-          .collection('incidents')
-          .doc(incidentId)
-          .set(
-            {
-              id:
-                incidentId,
-
-              severity:
-                classification.severity,
-
-              confidence:
-                classification.confidence,
-
-              isSingleEvent:
-                classification.isSingleEvent,
-
-              reasoningTrace:
-                classification.reasoningTrace,
-
-              reasoningSource:
-                classification.reasoningSource,
-
-              status:
-                'open',
-
-              assignedResponderId:
-                null,
-
-              centroid:
-                activeCluster.centroid,
-
-              categories:
-                Array.from(
-                  activeCluster.categories,
-                ),
-
-              reportIds:
-                sortedReports.map(
-                  (report) =>
-                    report.id,
-                ),
-
-              reportCount:
-                sortedReports.length,
-
-              reports:
-                sortedReports,
-
-              timestampMs:
-                earliestReport.timestampMs,
-
-              updatedAtMs:
-                Date.now(),
-            },
-
-            {
-              merge: true,
-            },
-          );
-
-        console.log(
-          '[INCIDENT_UPSERTED]',
-          incidentId,
-          `reports=${sortedReports.length}`,
-          `severity=${classification.severity}`,
-          `reasoning=${classification.reasoningSource}`,
-        );
-      } catch (error) {
-        console.error(
-          '[REPORT_PIPELINE_ERROR]',
-          newReport.id,
-          error,
-        );
-
-        /*
-         * Last-resort deterministic fallback.
-         *
-         * A valid emergency report must never
-         * silently disappear because clustering
-         * or GenAI processing failed.
-         */
-        const fallbackIncidentId =
-          `inc_${newReport.id}`;
-
-        await db
-          .collection('incidents')
-          .doc(
-            fallbackIncidentId,
-          )
-          .set(
-            {
-              id:
-                fallbackIncidentId,
-
-              severity:
-                CATEGORY_SEVERITY[
-                  newReport.category
-                ],
-
-              confidence:
-                50,
-
-              isSingleEvent:
-                true,
-
-              reasoningTrace:
-                'Emergency report received. Automated fusion processing was unavailable, so a fallback incident was created for immediate operator review.',
-
-              reasoningSource:
-                'deterministic_fallback',
-
-              status:
-                'open',
-
-              assignedResponderId:
-                null,
-
-              centroid: {
-                lat:
-                  newReport.lat,
-
-                lng:
-                  newReport.lng,
-              },
-
-              categories: [
-                newReport.category,
-              ],
-
-              reportIds: [
-                newReport.id,
-              ],
-
-              reportCount:
-                1,
-
-              reports: [
-                newReport,
-              ],
-
-              timestampMs:
-                newReport.timestampMs,
-
-              updatedAtMs:
-                Date.now(),
-            },
-
-            {
-              merge: true,
-            },
-          );
-
-        console.log(
-          '[FALLBACK_INCIDENT_CREATED]',
-          fallbackIncidentId,
-        );
-      }
-    },
-  );
+    console.log("[FALLBACK_INCIDENT_CREATED]", fallbackIncidentId);
+  }
+});
 
 /*
  * =====================================================
@@ -732,369 +333,369 @@ export const onReportCreate =
  * same Firestore document.
  */
 
-export const onGateReadingWritten =
-  onDocumentWritten(
-    'gates/{gateId}',
+export const onGateReadingWritten = onDocumentWritten(
+  "gates/{gateId}",
+  async (event) => {
+    const change = event.data;
+    if (!change) return;
 
-    async (event) => {
-      const change =
-        event.data;
+    const afterSnapshot = change.after;
+    if (!afterSnapshot.exists) return;
 
-      if (!change) {
-        return;
-      }
+    const after = afterSnapshot.data();
+    if (!after) return;
 
-      const afterSnapshot =
-        change.after;
+    const before = change.before.exists ?
+      change.before.data() :
+      undefined;
+
+    const isNewDocument = !change.before.exists;
+
+    const rawInputChanged =
+      isNewDocument ||
+      before?.currentCount !== after.currentCount ||
+      before?.capacity !== after.capacity ||
+      before?.previousCount !== after.previousCount ||
+      before?.secondsSinceLastReading !==
+        after.secondsSinceLastReading;
+
+    if (!rawInputChanged) return;
+
+    try {
+      /*
+       * First calculate deterministic risk for the gate
+       * that triggered this invocation.
+       */
+      const riskFeatures = computeGateRisk({
+        gateId: event.params.gateId,
+        currentCount: Number(after.currentCount),
+        capacity: Number(after.capacity),
+        previousCount: Number(after.previousCount),
+        secondsSinceLastReading: Number(
+          after.secondsSinceLastReading,
+        ),
+      });
 
       /*
-       * A deleted gate document does not
-       * require risk processing.
+       * LOW risk requires no Gemini reasoning.
        */
-      if (
-        !afterSnapshot.exists
-      ) {
+      if (riskFeatures.ruleBasedLevel === "LOW") {
+        await afterSnapshot.ref.set(
+          {
+            gateId: event.params.gateId,
+            densityPct: riskFeatures.densityPct,
+            netFlowPerMin: riskFeatures.netFlowPerMin,
+            timeToCriticalSec: Number.isFinite(
+              riskFeatures.timeToCriticalSec,
+            ) ?
+              riskFeatures.timeToCriticalSec :
+              null,
+            ruleBasedLevel: riskFeatures.ruleBasedLevel,
+            riskLevel: riskFeatures.ruleBasedLevel,
+            narrative: "Gate operating normally.",
+            recommendedGate: null,
+            reasoningStatus: "not_required",
+            processingError: null,
+            lastUpdatedMs: Date.now(),
+          },
+          {merge: true},
+        );
+
         return;
       }
-
-      const after =
-        afterSnapshot.data();
-
-      if (!after) {
-        return;
-      }
-
-      const before =
-        change.before.exists
-          ? change.before.data()
-          : undefined;
-
-      const isNewDocument =
-        !change.before.exists;
 
       /*
-       * CRITICAL RECURSION GUARD
-       *
-       * The Cloud Function writes fields such as:
-       * densityPct, narrative, riskLevel, etc.
-       *
-       * Those writes trigger onDocumentWritten again.
-       *
-       * We continue only when one of the RAW sensor
-       * inputs actually changed.
+       * Deterministic fallback is always available if
+       * Gemini is unavailable or returns invalid output.
        */
-      const rawInputChanged =
-        isNewDocument ||
-        before?.currentCount !==
-          after.currentCount ||
-        before?.capacity !==
-          after.capacity ||
-        before?.previousCount !==
-          after.previousCount ||
-        before
-          ?.secondsSinceLastReading !==
-          after.secondsSinceLastReading;
+      if (!genAI) {
+        await afterSnapshot.ref.set(
+          {
+            gateId: event.params.gateId,
+            densityPct: riskFeatures.densityPct,
+            netFlowPerMin: riskFeatures.netFlowPerMin,
+            timeToCriticalSec: Number.isFinite(
+              riskFeatures.timeToCriticalSec,
+            ) ?
+              riskFeatures.timeToCriticalSec :
+              null,
+            ruleBasedLevel: riskFeatures.ruleBasedLevel,
+            riskLevel: riskFeatures.ruleBasedLevel,
+            narrative:
+              "Elevated crowd risk detected. Operator review recommended.",
+            recommendedGate: null,
+            reasoningStatus: "unavailable",
+            processingError: null,
+            lastUpdatedMs: Date.now(),
+          },
+          {merge: true},
+        );
 
-      if (!rawInputChanged) {
         return;
       }
 
       try {
         /*
-         * Deterministic feature extraction happens
-         * before GenAI.
-         *
-         * This means gate risk still works even if
-         * Gemini is unavailable.
+         * Build one venue-wide snapshot so Gemini reasons
+         * across every valid gate together.
          */
-        const riskFeatures =
-          computeGateRisk({
-            gateId:
-              event.params.gateId,
+        const allGatesSnapshot = await db.collection("gates").get();
+        const allGateFeatures: GateRiskFeatures[] = [];
 
-            currentCount:
-              Number(
-                after.currentCount,
-              ),
+        for (const gateDocument of allGatesSnapshot.docs) {
+          const gateData = gateDocument.data();
 
-            capacity:
-              Number(
-                after.capacity,
-              ),
-
-            previousCount:
-              Number(
-                after.previousCount,
-              ),
-
-            secondsSinceLastReading:
-              Number(
-                after.secondsSinceLastReading,
-              ),
-          });
-
-        let narrative =
-          riskFeatures.ruleBasedLevel ===
-          'LOW'
-            ? 'Gate operating normally.'
-            : 'Elevated crowd risk detected. Operator review recommended.';
-
-        let recommendedGate:
-          string | null =
-          null;
-
-        let reasoningStatus:
-          | 'not_required'
-          | 'complete'
-          | 'unavailable' =
-          riskFeatures.ruleBasedLevel ===
-          'LOW'
-            ? 'not_required'
-            : 'unavailable';
-
-        /*
-         * Gemini is invoked only when deterministic
-         * analysis determines that reasoning adds
-         * operational value.
-         */
-        if (
-          riskFeatures.ruleBasedLevel !==
-            'LOW' &&
-          genAI
-        ) {
           try {
-            const allGatesSnapshot =
-              await db
-                .collection('gates')
-                .get();
+            const features =
+              gateDocument.id === event.params.gateId ?
+                riskFeatures :
+                computeGateRisk({
+                  gateId: gateDocument.id,
+                  currentCount: Number(gateData.currentCount),
+                  capacity: Number(gateData.capacity),
+                  previousCount: Number(gateData.previousCount),
+                  secondsSinceLastReading: Number(
+                    gateData.secondsSinceLastReading,
+                  ),
+                });
 
-            const allGateFeatures:
-              GateRiskFeatures[] =
-              [];
-
-            for (
-              const gateDocument of
-              allGatesSnapshot.docs
-            ) {
-              const gateData =
-                gateDocument.data();
-
-              try {
-                const features =
-                  gateDocument.id ===
-                  event.params.gateId
-                    ? riskFeatures
-                    : computeGateRisk({
-                        gateId:
-                          gateDocument.id,
-
-                        currentCount:
-                          Number(
-                            gateData.currentCount,
-                          ),
-
-                        capacity:
-                          Number(
-                            gateData.capacity,
-                          ),
-
-                        previousCount:
-                          Number(
-                            gateData.previousCount,
-                          ),
-
-                        secondsSinceLastReading:
-                          Number(
-                            gateData.secondsSinceLastReading,
-                          ),
-                      });
-
-                allGateFeatures.push(
-                  features,
-                );
-              } catch (error) {
-                /*
-                 * One malformed gate must not
-                 * destroy reasoning for every
-                 * valid gate.
-                 */
-                console.error(
-                  '[INVALID_GATE_SKIPPED]',
-                  gateDocument.id,
-                  error,
-                );
-              }
-            }
-
-            /*
-             * Actual reasoningPromptBuilder
-             * signature:
-             *
-             * buildGateRiskPrompt(
-             *   allGateFeatures,
-             *   context
-             * )
-             */
-            const prompt =
-              buildGateRiskPrompt(
-                allGateFeatures,
-                {
-                  minutesToKickoff:
-                    30,
-
-                  isRaining:
-                    false,
-                },
-              );
-
-            const model =
-              genAI.getGenerativeModel({
-                model:
-                  GEMINI_MODEL,
-              });
-
-            const result =
-              await model.generateContent(
-                prompt,
-              );
-
-            const parsed =
-              parseJsonResponse(
-                result.response.text(),
-              );
-
-            if (
-              typeof parsed.narrative ===
-                'string' &&
-              parsed.narrative
-                .trim()
-                .length > 0
-            ) {
-              narrative =
-                parsed.narrative.trim();
-            }
-
-            if (
-              typeof parsed.recommendedGate ===
-                'string' &&
-              parsed.recommendedGate
-                .trim()
-                .length > 0
-            ) {
-              recommendedGate =
-                parsed.recommendedGate.trim();
-            }
-
-            reasoningStatus =
-              'complete';
+            allGateFeatures.push(features);
           } catch (error) {
             console.error(
-              '[GATE_AI_FALLBACK]',
-              event.params.gateId,
+              "[INVALID_GATE_SKIPPED]",
+              gateDocument.id,
               error,
             );
-
-            /*
-             * Deterministic risk remains available
-             * even though GenAI enrichment failed.
-             */
-            reasoningStatus =
-              'unavailable';
           }
         }
 
+        const flaggedFeatures = allGateFeatures.filter(
+          (gate) => gate.ruleBasedLevel !== "LOW",
+        );
+
+        const prompt = buildGateRiskPrompt(allGateFeatures, {
+          minutesToKickoff: 30,
+          isRaining: false,
+        });
+
+        const model = genAI.getGenerativeModel({
+          model: GEMINI_MODEL,
+        });
+
+        const result = await model.generateContent(prompt);
+        const parsed = parseJsonResponse(
+          result.response.text(),
+        );
+
+        if (!Array.isArray(parsed.gates)) {
+          throw new Error(
+            "Gate reasoning response did not contain a gates array.",
+          );
+        }
+
         /*
-         * Firestore cannot store Infinity.
+         * Index deterministic gate state by ID.
+         * Gemini output is never trusted as the source
+         * of deterministic risk levels.
          */
-        const safeTimeToCritical =
-          Number.isFinite(
-            riskFeatures.timeToCriticalSec,
-          )
-            ? riskFeatures.timeToCriticalSec
-            : null;
+        const featureById = new Map(
+          allGateFeatures.map((gate) => [gate.gateId, gate]),
+        );
 
-        await afterSnapshot.ref.set(
-          {
-            gateId:
-              event.params.gateId,
+        const flaggedIds = new Set(
+          flaggedFeatures.map((gate) => gate.gateId),
+        );
 
-            densityPct:
-              riskFeatures.densityPct,
+        const returnedIds = new Set<string>();
+        const validResults: Array<{
+          gateId: string;
+          narrative: string;
+          recommendedGate: string | null;
+          confidence: number;
+        }> = [];
 
-            netFlowPerMin:
-              riskFeatures.netFlowPerMin,
+        for (const item of parsed.gates) {
+          if (
+            !item ||
+            typeof item !== "object" ||
+            typeof item.gateId !== "string" ||
+            !flaggedIds.has(item.gateId) ||
+            returnedIds.has(item.gateId) ||
+            typeof item.narrative !== "string" ||
+            item.narrative.trim().length === 0
+          ) {
+            continue;
+          }
 
-            timeToCriticalSec:
-              safeTimeToCritical,
+          let recommendedGate: string | null = null;
 
-            ruleBasedLevel:
-              riskFeatures.ruleBasedLevel,
+          if (
+            typeof item.recommendedGate === "string" &&
+            item.recommendedGate.trim().length > 0
+          ) {
+            const candidateId = item.recommendedGate.trim();
+            const candidate = featureById.get(candidateId);
 
             /*
-             * Canonical dashboard-facing field.
+             * Reject invented gates, self-redirects and
+             * CRITICAL destinations deterministically.
              */
-            riskLevel:
-              riskFeatures.ruleBasedLevel,
+            if (
+              candidate &&
+              candidateId !== item.gateId &&
+              candidate.ruleBasedLevel !== "CRITICAL"
+            ) {
+              recommendedGate = candidateId;
+            }
+          }
 
-            narrative,
+          const confidence =
+            typeof item.confidence === "number" &&
+            Number.isFinite(item.confidence) ?
+              Math.min(1, Math.max(0, item.confidence)) :
+              0;
 
+          returnedIds.add(item.gateId);
+
+          validResults.push({
+            gateId: item.gateId,
+            narrative: item.narrative.trim(),
             recommendedGate,
+            confidence,
+          });
+        }
 
-            reasoningStatus,
+        /*
+         * Require Gemini to return one valid result for
+         * every flagged gate. Otherwise use deterministic
+         * fallback rather than silently storing partial AI output.
+         */
+        if (validResults.length !== flaggedFeatures.length) {
+          throw new Error(
+            `Incomplete gate reasoning response: expected ${flaggedFeatures.length}, received ${validResults.length}.`,
+          );
+        }
 
-            /*
-             * Clear any historical processing
-             * error after a successful run.
-             */
-            processingError:
-              null,
+        const batch = db.batch();
+        const now = Date.now();
 
-            lastUpdatedMs:
-              Date.now(),
-          },
+        /*
+         * Write deterministic state for every known gate,
+         * plus AI reasoning for every flagged gate.
+         */
+        for (const features of allGateFeatures) {
+          const gateRef = db.collection("gates").doc(features.gateId);
 
-          {
-            merge: true,
-          },
-        );
+          const safeTimeToCritical = Number.isFinite(
+            features.timeToCriticalSec,
+          ) ?
+            features.timeToCriticalSec :
+            null;
 
-        console.log(
-          '[GATE_PROCESSED]',
-          event.params.gateId,
-          `density=${riskFeatures.densityPct}`,
-          `risk=${riskFeatures.ruleBasedLevel}`,
-          `reasoning=${reasoningStatus}`,
-        );
+          const aiResult = validResults.find(
+            (item) => item.gateId === features.gateId,
+          );
+
+          if (features.ruleBasedLevel === "LOW") {
+            batch.set(
+              gateRef,
+              {
+                gateId: features.gateId,
+                densityPct: features.densityPct,
+                netFlowPerMin: features.netFlowPerMin,
+                timeToCriticalSec: safeTimeToCritical,
+                ruleBasedLevel: features.ruleBasedLevel,
+                riskLevel: features.ruleBasedLevel,
+                narrative: "Gate operating normally.",
+                recommendedGate: null,
+                reasoningStatus: "not_required",
+                processingError: null,
+                lastUpdatedMs: now,
+              },
+              {merge: true},
+            );
+
+            continue;
+          }
+
+          if (!aiResult) {
+            throw new Error(
+              `Missing validated reasoning for gate ${features.gateId}.`,
+            );
+          }
+
+          batch.set(
+            gateRef,
+            {
+              gateId: features.gateId,
+              densityPct: features.densityPct,
+              netFlowPerMin: features.netFlowPerMin,
+              timeToCriticalSec: safeTimeToCritical,
+              ruleBasedLevel: features.ruleBasedLevel,
+              riskLevel: features.ruleBasedLevel,
+              narrative: aiResult.narrative,
+              recommendedGate: aiResult.recommendedGate,
+              reasoningConfidence: aiResult.confidence,
+              reasoningStatus: "complete",
+              processingError: null,
+              lastUpdatedMs: now,
+            },
+            {merge: true},
+          );
+        }
+
+        await batch.commit();
       } catch (error) {
         console.error(
-          '[GATE_PIPELINE_ERROR]',
+          "[GATE_AI_FALLBACK]",
           event.params.gateId,
           error,
         );
 
         /*
-         * Persist processing state so the UI or
-         * audit tooling can expose pipeline failure
-         * rather than silently displaying stale data.
+         * Preserve deterministic safety output for the
+         * triggering gate when AI reasoning fails.
          */
         await afterSnapshot.ref.set(
           {
-            reasoningStatus:
-              'unavailable',
-
-            processingError:
-              error instanceof Error
-                ? error.message
-                : 'Gate reading could not be processed.',
-
-            lastUpdatedMs:
-              Date.now(),
+            gateId: event.params.gateId,
+            densityPct: riskFeatures.densityPct,
+            netFlowPerMin: riskFeatures.netFlowPerMin,
+            timeToCriticalSec: Number.isFinite(
+              riskFeatures.timeToCriticalSec,
+            ) ?
+              riskFeatures.timeToCriticalSec :
+              null,
+            ruleBasedLevel: riskFeatures.ruleBasedLevel,
+            riskLevel: riskFeatures.ruleBasedLevel,
+            narrative:
+              "Elevated crowd risk detected. Operator review recommended.",
+            recommendedGate: null,
+            reasoningStatus: "unavailable",
+            processingError: null,
+            lastUpdatedMs: Date.now(),
           },
-
-          {
-            merge: true,
-          },
+          {merge: true},
         );
       }
-    },
-  );
+    } catch (error) {
+      console.error(
+        "[GATE_PROCESSING_ERROR]",
+        event.params.gateId,
+        error,
+      );
+
+      await afterSnapshot.ref.set(
+        {
+          processingError:
+            error instanceof Error ?
+              error.message :
+              "Unknown gate processing error.",
+          reasoningStatus: "unavailable",
+          lastUpdatedMs: Date.now(),
+        },
+        {merge: true},
+      );
+    }
+  },
+);

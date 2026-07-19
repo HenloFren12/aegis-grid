@@ -1,6 +1,6 @@
 export interface QueuedIncident {
   incidentId: string;
-  severity: number;   // 1–5 scale
+  severity: number; // 1–5 scale
   ageSec: number;
 }
 
@@ -9,7 +9,7 @@ function isHigherPriority(a: QueuedIncident, b: QueuedIncident): boolean {
   if (a.severity !== b.severity) {
     return a.severity > b.severity; // Higher severity wins
   }
-  return a.ageSec > b.ageSec;       // Older age wins if tied
+  return a.ageSec > b.ageSec; // Older age wins if tied
 }
 
 export class IncidentPriorityQueue {
@@ -50,11 +50,11 @@ export class IncidentPriorityQueue {
       const left = 2 * i + 1;
       const right = 2 * i + 2;
       let largest = i;
-      
+
       if (left < n && isHigherPriority(this.heap[left], this.heap[largest])) largest = left;
       if (right < n && isHigherPriority(this.heap[right], this.heap[largest])) largest = right;
       if (largest === i) break;
-      
+
       [this.heap[largest], this.heap[i]] = [this.heap[i], this.heap[largest]];
       i = largest;
     }

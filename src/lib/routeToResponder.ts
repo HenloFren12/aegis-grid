@@ -22,7 +22,10 @@ export function buildVenueGraph(edges: CorridorEdge[]): AdjacencyList {
 
 class MinHeap<T> {
   private items: T[] = [];
-  constructor(private compare: (a: T, b: T) => number) {}
+  private compare: (a: T, b: T) => number;
+  constructor(compare: (a: T, b: T) => number) {
+    this.compare = compare;
+  }
   
   push(item: T): void {
     this.items.push(item);

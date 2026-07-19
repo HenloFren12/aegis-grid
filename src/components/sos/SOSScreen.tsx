@@ -1,26 +1,9 @@
-import {
-  useState,
-  type FormEvent,
-} from 'react';
-
-import {
-  addDoc,
-  collection,
-} from 'firebase/firestore';
-
+import { useState, type FormEvent } from 'react';
+import { addDoc, collection } from 'firebase/firestore';
 import { db } from '../../config/firebase';
+import { STADIUM_GATE_LIST, STADIUM_GATES, type GateId } from '../../config/stadiumConfig';
 
-import {
-  STADIUM_GATE_LIST,
-  STADIUM_GATES,
-  type GateId,
-} from '../../config/stadiumConfig';
-
-type Category =
-  | 'medical'
-  | 'security'
-  | 'lost_child'
-  | 'other';
+type Category = 'medical' | 'security' | 'lost_child' | 'other';
 
 const CATEGORY_LABELS: Record<Category, string> = {
   medical: 'Medical',
@@ -30,93 +13,43 @@ const CATEGORY_LABELS: Record<Category, string> = {
 };
 
 export default function SOSScreen() {
-  const [category, setCategory] =
-    useState<Category | null>(null);
+  const [category, setCategory] = useState<Category | null>(null);
+  const [description, setDescription] = useState('');
+  const [gateId, setGateId] = useState<GateId | ''>('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
 
-  const [description, setDescription] =
-    useState('');
+  async function submitReport(lat: number, lng: number, geofenceOk: boolean, selectedGateId: GateId | null): Promise<void> {
+    if (!category) throw new Error('Emergency category is required.');
 
-  const [gateId, setGateId] =
-    useState<GateId | ''>('');
+    const trimmedDescription = description.trim().slice(0, 280);
+    const locationLabel = selectedGateId ? STADIUM_GATES[selectedGateId].name : 'GPS location';
 
-  const [isSubmitting, setIsSubmitting] =
-    useState(false);
-
-  const [error, setError] =
-    useState<string | null>(null);
-
-  const [success, setSuccess] =
-    useState(false);
-
-  async function submitReport(
-    lat: number,
-    lng: number,
-    geofenceOk: boolean,
-    selectedGateId: GateId | null,
-  ): Promise<void> {
-    if (!category) {
-      throw new Error(
-        'Emergency category is required.',
-      );
-    }
-
-    const trimmedDescription =
-      description.trim().slice(0, 280);
-
-    const locationLabel =
-      selectedGateId
-        ? STADIUM_GATES[selectedGateId].name
-        : 'GPS location';
-
-    await addDoc(
-      collection(db, 'reports'),
-      {
-        category,
-        lat,
-        lng,
-
-        text:
-          trimmedDescription ||
-          `${CATEGORY_LABELS[category]} assistance requested.`,
-
-        source: 'fan',
-
-        timestampMs: Date.now(),
-
-        geofenceOk,
-
-        gateId: selectedGateId,
-
-        locationLabel,
-
-        provenance: 'live_sos',
-      },
-    );
+    await addDoc(collection(db, 'reports'), {
+      category,
+      lat,
+      lng,
+      text: trimmedDescription || `${CATEGORY_LABELS[category]} assistance requested.`,
+      source: 'fan',
+      timestampMs: Date.now(),
+      geofenceOk,
+      gateId: selectedGateId,
+      locationLabel,
+      provenance: 'live_sos',
+    });
   }
 
-  async function submitAtGate(
-    selectedGateId: GateId,
-  ): Promise<void> {
-    const gate =
-      STADIUM_GATES[selectedGateId];
-
-    await submitReport(
-      gate.lat,
-      gate.lng,
-      false,
-      selectedGateId,
-    );
+  async function submitAtGate(selectedGateId: GateId): Promise<void> {
+    const gate = STADIUM_GATES[selectedGateId];
+    await submitReport(gate.lat, gate.lng, false, selectedGateId);
   }
 
-  const handleSubmit = async (
-    event: FormEvent,
-  ) => {
+  const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
 
     if (!category) {
-      setError(
-        'Please select the type of emergency.',
-      );
+      setError('Please select the type of emergency.');
       return;
     }
 
@@ -131,71 +64,36 @@ export default function SOSScreen() {
       }
 
       if (!navigator.geolocation) {
-        throw new Error(
-          'Location detection is unavailable. Please select your nearest gate.',
-        );
+        throw new Error('Location detection is unavailable. Please select your nearest gate.');
       }
 
       navigator.geolocation.getCurrentPosition(
         (position) => {
           void (async () => {
             try {
-              await submitReport(
-                position.coords.latitude,
-                position.coords.longitude,
-                true,
-                null,
-              );
-
+              await submitReport(position.coords.latitude, position.coords.longitude, true, null);
               setSuccess(true);
             } catch (submitError) {
-              console.error(
-                'SOS submission failed:',
-                submitError,
-              );
-
-              setError(
-                submitError instanceof Error
-                  ? submitError.message
-                  : 'Unable to send the emergency report.',
-              );
+              console.error('SOS submission failed:', submitError);
+              setError(submitError instanceof Error ? submitError.message : 'Unable to send the emergency report.');
             } finally {
               setIsSubmitting(false);
             }
           })();
         },
-
         () => {
-          setError(
-            'We could not detect your location. Select your nearest gate and submit again.',
-          );
-
+          setError('We could not detect your location. Select your nearest gate and submit again.');
           setIsSubmitting(false);
         },
-
-        {
-          enableHighAccuracy: true,
-          timeout: 10_000,
-          maximumAge: 30_000,
-        },
+        { enableHighAccuracy: true, timeout: 10_000, maximumAge: 30_000 },
       );
 
       return;
     } catch (submitError) {
-      console.error(
-        'SOS submission failed:',
-        submitError,
-      );
-
-      setError(
-        submitError instanceof Error
-          ? submitError.message
-          : 'Unable to send the emergency report.',
-      );
+      console.error('SOS submission failed:', submitError);
+      setError(submitError instanceof Error ? submitError.message : 'Unable to send the emergency report.');
     } finally {
-      if (gateId) {
-        setIsSubmitting(false);
-      }
+      if (gateId) setIsSubmitting(false);
     }
   };
 
@@ -211,27 +109,15 @@ export default function SOSScreen() {
     <main
       style={{
         minHeight: '100vh',
-        background:
-          'linear-gradient(180deg, #090a0d 0%, #111318 100%)',
+        background: 'linear-gradient(180deg, #090a0d 0%, #111318 100%)',
         color: '#f5f7fa',
-        fontFamily:
-          'Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        fontFamily: 'Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
         boxSizing: 'border-box',
         padding: 'clamp(1rem, 4vw, 2rem)',
       }}
     >
-      <div
-        style={{
-          width: '100%',
-          maxWidth: '680px',
-          margin: '0 auto',
-        }}
-      >
-        <header
-          style={{
-            marginBottom: '1.75rem',
-          }}
-        >
+      <div style={{ width: '100%', maxWidth: '680px', margin: '0 auto' }}>
+        <header style={{ marginBottom: '1.75rem' }}>
           <div
             style={{
               color: '#8b949e',
@@ -245,27 +131,12 @@ export default function SOSScreen() {
             Aegis Grid · Public Emergency Access
           </div>
 
-          <h1
-            style={{
-              color: '#ff5252',
-              margin: 0,
-              fontSize: 'clamp(1.8rem, 6vw, 2.7rem)',
-              lineHeight: 1.1,
-            }}
-          >
+          <h1 style={{ color: '#ff5252', margin: 0, fontSize: 'clamp(1.8rem, 6vw, 2.7rem)', lineHeight: 1.1 }}>
             Emergency SOS
           </h1>
 
-          <p
-            style={{
-              color: '#c7cbd1',
-              lineHeight: 1.6,
-              margin: '0.75rem 0 0',
-              maxWidth: '580px',
-            }}
-          >
-            Send an emergency signal directly to
-            stadium operations. No login is required.
+          <p style={{ color: '#c7cbd1', lineHeight: 1.6, margin: '0.75rem 0 0', maxWidth: '580px' }}>
+            Send an emergency signal directly to stadium operations. No login is required.
           </p>
         </header>
 
@@ -278,8 +149,7 @@ export default function SOSScreen() {
               borderRadius: '12px',
               padding: 'clamp(1.5rem, 5vw, 2.5rem)',
               textAlign: 'center',
-              boxShadow:
-                '0 18px 50px rgba(0,0,0,0.25)',
+              boxShadow: '0 18px 50px rgba(0,0,0,0.25)',
             }}
           >
             <div
@@ -301,27 +171,12 @@ export default function SOSScreen() {
               ✓
             </div>
 
-            <h2
-              style={{
-                color: '#69f0ae',
-                margin: '0 0 0.75rem',
-                fontSize: '1.6rem',
-              }}
-            >
+            <h2 style={{ color: '#69f0ae', margin: '0 0 0.75rem', fontSize: '1.6rem' }}>
               Emergency report sent
             </h2>
 
-            <p
-              style={{
-                color: '#c7cbd1',
-                lineHeight: 1.6,
-                margin: 0,
-              }}
-            >
-              Stadium operations have received your
-              emergency signal and location information.
-              The report is now entering the live incident
-              assessment pipeline.
+            <p style={{ color: '#c7cbd1', lineHeight: 1.6, margin: 0 }}>
+              Stadium operations have received your emergency signal and location information. The report is now entering the live incident assessment pipeline.
             </p>
 
             <button
@@ -350,8 +205,7 @@ export default function SOSScreen() {
               border: '1px solid #2f3742',
               borderRadius: '12px',
               padding: 'clamp(1.1rem, 4vw, 2rem)',
-              boxShadow:
-                '0 18px 50px rgba(0,0,0,0.25)',
+              boxShadow: '0 18px 50px rgba(0,0,0,0.25)',
               display: 'flex',
               flexDirection: 'column',
               gap: '1.6rem',
@@ -373,14 +227,7 @@ export default function SOSScreen() {
               </div>
             )}
 
-            <fieldset
-              style={{
-                border: 0,
-                margin: 0,
-                padding: 0,
-                minWidth: 0,
-              }}
-            >
+            <fieldset style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
               <legend
                 style={{
                   display: 'block',
@@ -398,40 +245,25 @@ export default function SOSScreen() {
               <div
                 style={{
                   display: 'grid',
-                  gridTemplateColumns:
-                    'repeat(auto-fit, minmax(135px, 1fr))',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(135px, 1fr))',
                   gap: '0.7rem',
                 }}
               >
-                {(
-                  Object.keys(
-                    CATEGORY_LABELS,
-                  ) as Category[]
-                ).map((item) => {
-                  const selected =
-                    category === item;
-
+                {(Object.keys(CATEGORY_LABELS) as Category[]).map((item) => {
+                  const selected = category === item;
                   return (
                     <button
                       key={item}
                       type="button"
                       aria-pressed={selected}
-                      onClick={() =>
-                        setCategory(item)
-                      }
+                      onClick={() => setCategory(item)}
                       style={{
                         minHeight: '58px',
                         padding: '0.75rem',
-                        border: selected
-                          ? '2px solid #ff5252'
-                          : '1px solid #4b5563',
+                        border: selected ? '2px solid #ff5252' : '1px solid #4b5563',
                         borderRadius: '7px',
-                        background: selected
-                          ? '#3a1719'
-                          : '#20242b',
-                        color: selected
-                          ? '#ff8a8a'
-                          : '#f1f3f5',
+                        background: selected ? '#3a1719' : '#20242b',
+                        color: selected ? '#ff8a8a' : '#f1f3f5',
                         fontWeight: 750,
                         fontSize: '0.95rem',
                         cursor: 'pointer',
@@ -444,31 +276,15 @@ export default function SOSScreen() {
               </div>
             </fieldset>
 
-            <label
-              htmlFor="sos-location"
-              style={{
-                display: 'block',
-              }}
-            >
-              <span
-                style={{
-                  display: 'block',
-                  color: '#f5f7fa',
-                  fontWeight: 750,
-                  marginBottom: '0.65rem',
-                }}
-              >
+            <label htmlFor="sos-location" style={{ display: 'block' }}>
+              <span style={{ display: 'block', color: '#f5f7fa', fontWeight: 750, marginBottom: '0.65rem' }}>
                 Where are you?
               </span>
 
               <select
                 id="sos-location"
                 value={gateId}
-                onChange={(event) =>
-                  setGateId(
-                    event.target.value as GateId | '',
-                  )
-                }
+                onChange={(event) => setGateId(event.target.value as GateId | '')}
                 style={{
                   width: '100%',
                   minHeight: '54px',
@@ -481,46 +297,22 @@ export default function SOSScreen() {
                   fontSize: '1rem',
                 }}
               >
-                <option value="">
-                  I don't know — use my device location
-                </option>
-
+                <option value="">I don't know — use my device location</option>
                 {STADIUM_GATE_LIST.map((gate) => (
-                  <option
-                    key={gate.id}
-                    value={gate.id}
-                  >
-                    {gate.name}
-                  </option>
+                  <option key={gate.id} value={gate.id}>{gate.name}</option>
                 ))}
               </select>
             </label>
 
-            <label
-              htmlFor="sos-description"
-              style={{
-                display: 'block',
-              }}
-            >
-              <span
-                style={{
-                  display: 'block',
-                  color: '#f5f7fa',
-                  fontWeight: 750,
-                  marginBottom: '0.65rem',
-                }}
-              >
+            <label htmlFor="sos-description" style={{ display: 'block' }}>
+              <span style={{ display: 'block', color: '#f5f7fa', fontWeight: 750, marginBottom: '0.65rem' }}>
                 What is happening?
               </span>
 
               <textarea
                 id="sos-description"
                 value={description}
-                onChange={(event) =>
-                  setDescription(
-                    event.target.value,
-                  )
-                }
+                onChange={(event) => setDescription(event.target.value)}
                 maxLength={280}
                 rows={5}
                 placeholder="Briefly describe what you can see or what help is needed…"
@@ -538,14 +330,7 @@ export default function SOSScreen() {
                 }}
               />
 
-              <div
-                style={{
-                  marginTop: '0.4rem',
-                  textAlign: 'right',
-                  color: '#8b949e',
-                  fontSize: '0.78rem',
-                }}
-              >
+              <div style={{ marginTop: '0.4rem', textAlign: 'right', color: '#8b949e', fontSize: '0.78rem' }}>
                 {description.length}/280
               </div>
             </label>
@@ -559,34 +344,19 @@ export default function SOSScreen() {
                 minHeight: '58px',
                 border: '1px solid #d32f2f',
                 borderRadius: '7px',
-                background: isSubmitting
-                  ? '#6b2b2e'
-                  : '#b71c1c',
+                background: isSubmitting ? '#6b2b2e' : '#b71c1c',
                 color: '#fff',
                 fontSize: '1.05rem',
                 fontWeight: 850,
                 letterSpacing: '0.03em',
-                cursor: isSubmitting
-                  ? 'wait'
-                  : 'pointer',
+                cursor: isSubmitting ? 'wait' : 'pointer',
               }}
             >
-              {isSubmitting
-                ? 'SENDING EMERGENCY REPORT…'
-                : 'SEND EMERGENCY SOS'}
+              {isSubmitting ? 'SENDING EMERGENCY REPORT…' : 'SEND EMERGENCY SOS'}
             </button>
 
-            <p
-              style={{
-                color: '#8b949e',
-                fontSize: '0.78rem',
-                lineHeight: 1.5,
-                margin: 0,
-                textAlign: 'center',
-              }}
-            >
-              Emergency reports are sent directly to the
-              stadium operations incident pipeline.
+            <p style={{ color: '#8b949e', fontSize: '0.78rem', lineHeight: 1.5, margin: 0, textAlign: 'center' }}>
+              Emergency reports are sent directly to the stadium operations incident pipeline.
             </p>
           </form>
         )}

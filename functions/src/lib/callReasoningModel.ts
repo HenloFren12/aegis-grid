@@ -8,15 +8,15 @@ export async function callReasoningModel(prompt: string): Promise<any> {
   try {
     // In P1, this will point to your secure Firebase Cloud Function URL
     // which holds the AI Studio key securely in its environment secrets.
-    const response = await fetch('/api/reasoning', {
-      method: 'POST',
+    const response = await fetch("/api/reasoning", {
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
+        "Content-Type": "application/json",
         // Security headers mapped from SECTION: SECURITY
-        'X-Content-Type-Options': 'nosniff',
-        'X-Frame-Options': 'DENY'
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
       },
-      body: JSON.stringify({ prompt })
+      body: JSON.stringify({prompt}),
     });
 
     if (!response.ok) {
@@ -28,6 +28,6 @@ export async function callReasoningModel(prompt: string): Promise<any> {
   } catch (error) {
     console.error("[SECURITY] Reasoning model call failed:", error);
     // Malformed-JSON/Failure fallback per PILLAR 1 Performance Safeguards
-    return null; 
+    return null;
   }
 }
