@@ -4,9 +4,10 @@ import {
 } from 'react';
 
 import {
-  getAuth,
   signInWithEmailAndPassword,
 } from 'firebase/auth';
+
+import { auth } from '../../config/firebase';
 
 import {
   useNavigate,
@@ -36,8 +37,7 @@ export default function Login() {
     setLoading(true);
 
     try {
-      const auth = getAuth();
-
+      
       await signInWithEmailAndPassword(
         auth,
         email.trim(),

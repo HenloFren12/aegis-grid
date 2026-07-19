@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react';
 import { Navigate, Outlet } from 'react-router-dom';
-import { getAuth, onAuthStateChanged } from 'firebase/auth';
+import { onAuthStateChanged } from 'firebase/auth';
+import { auth } from '../../config/firebase';
 
 export default function AuthGuard() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
 
   useEffect(() => {
-    const auth = getAuth();
+    
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       // If a user object exists, they are logged in
       setIsAuthenticated(!!user);
