@@ -114,21 +114,13 @@ function normalizeCategory(
 function normalizeSource(
   value: unknown,
 ): RawReport['source'] {
-  /*
-   * Simulator reports are treated as
-   * staff-originated operational evidence
-   * because the current RawReport contract
-   * accepts "fan" or "staff".
-   */
-  if (
-    value === 'staff' ||
-    value === 'simulator'
-  ) {
+  if (value === 'staff') {
     return 'staff';
   }
 
   return 'fan';
 }
+
 
 function normalizeReport(
   documentId: string,
