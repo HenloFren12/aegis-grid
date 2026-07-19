@@ -1,46 +1,253 @@
-import { computeGateRisk } from './computeGateRisk';
+import {describe, expect, it} from "vitest";
+import {
+  computeGateRisk,
+  type GateReading,
+} from "./computeGateRisk";
 
-describe('computeGateRisk', () => {
-  it('returns 0 for timeToCriticalSec when gate is already at or over capacity', () => {
-    const result = computeGateRisk({ gateId: 'A', currentCount: 1050, capacity: 1000, previousCount: 1000, secondsSinceLastReading: 30 });
+function reading(
+  overrides: Partial<GateReading> = {},
+): GateReading {
+  return {
+    gateId: "A",
+    currentCount: 400,
+    capacity: 1000,
+    previousCount: 400,
+    secondsSinceLastReading: 60,
+    ...overrides,
+  };
+}
+
+describe("computeGateRisk", () => {
+  it("classifies low-risk conditions", () => {
+    const result = computeGateRisk(reading());
+
+    expect(result.gateId).toBe("A");
+    expect(result.densityPct).toBe(40);
+    expect(result.netFlowPerMin).toBe(0);
+    expect(result.timeToCriticalSec).toBe(Infinity);
+    expect(result.ruleBasedLevel).toBe("LOW");
+  });
+
+  it("classifies 60 percent density as MODERATE", () => {
+    const result = computeGateRisk(
+      reading({
+        currentCount: 600,
+        previousCount: 600,
+      }),
+    );
+
+    expect(result.densityPct).toBe(60);
+    expect(result.ruleBasedLevel).toBe("MODERATE");
+  });
+
+  it("classifies 80 percent density as HIGH", () => {
+    const result = computeGateRisk(
+      reading({
+        currentCount: 800,
+        previousCount: 800,
+      }),
+    );
+
+    expect(result.densityPct).toBe(80);
+    expect(result.ruleBasedLevel).toBe("HIGH");
+  });
+
+  it("classifies 95 percent density as CRITICAL", () => {
+    const result = computeGateRisk(
+      reading({
+        currentCount: 950,
+        previousCount: 950,
+      }),
+    );
+
+    expect(result.densityPct).toBe(95);
+    expect(result.ruleBasedLevel).toBe("CRITICAL");
+  });
+
+  it("calculates positive crowd flow", () => {
+    const result = computeGateRisk(
+      reading({
+        currentCount: 500,
+        previousCount: 400,
+        secondsSinceLastReading: 60,
+      }),
+    );
+
+    expect(result.netFlowPerMin).toBe(100);
+  });
+
+  it("calculates negative crowd flow", () => {
+    const result = computeGateRisk(
+      reading({
+        currentCount: 300,
+        previousCount: 400,
+        secondsSinceLastReading: 60,
+      }),
+    );
+
+    expect(result.netFlowPerMin).toBe(-100);
+  });
+
+  it("uses zero flow when elapsed time is zero", () => {
+    const result = computeGateRisk(
+      reading({
+        currentCount: 500,
+        previousCount: 400,
+        secondsSinceLastReading: 0,
+      }),
+    );
+
+    expect(result.netFlowPerMin).toBe(0);
+    expect(result.timeToCriticalSec).toBe(Infinity);
+  });
+
+  it("calculates time to full capacity", () => {
+    const result = computeGateRisk(
+      reading({
+        currentCount: 500,
+        previousCount: 400,
+        capacity: 1000,
+        secondsSinceLastReading: 60,
+      }),
+    );
+
+    expect(result.timeToCriticalSec).toBe(300);
+  });
+
+  it("sets time to critical to zero at capacity", () => {
+    const result = computeGateRisk(
+      reading({
+        currentCount: 1000,
+        previousCount: 1000,
+      }),
+    );
+
     expect(result.timeToCriticalSec).toBe(0);
+    expect(result.ruleBasedLevel).toBe("CRITICAL");
+  });
+
+  it("clamps displayed density above capacity to 100", () => {
+    const result = computeGateRisk(
+      reading({
+        currentCount: 1200,
+        capacity: 1000,
+        previousCount: 1100,
+      }),
+    );
+
     expect(result.densityPct).toBe(100);
-    expect(result.ruleBasedLevel).toBe('CRITICAL');
+    expect(result.ruleBasedLevel).toBe("CRITICAL");
   });
 
-  it('returns CRITICAL when density is at or above 95%', () => {
-    const result = computeGateRisk({ gateId: 'A', currentCount: 950, capacity: 1000, previousCount: 900, secondsSinceLastReading: 30 });
-    expect(result.ruleBasedLevel).toBe('CRITICAL');
+  it("escalates to HIGH when time to critical is under 5 minutes", () => {
+    const result = computeGateRisk(
+      reading({
+        currentCount: 500,
+        capacity: 1000,
+        previousCount: 390,
+        secondsSinceLastReading: 60,
+      }),
+    );
+
+    expect(result.densityPct).toBe(50);
+    expect(result.timeToCriticalSec).toBeLessThan(300);
+    expect(result.ruleBasedLevel).toBe("HIGH");
   });
 
-  it('returns Infinity timeToCriticalSec when flow is flat', () => {
-    const result = computeGateRisk({ gateId: 'A', currentCount: 500, capacity: 1000, previousCount: 500, secondsSinceLastReading: 30 });
-    expect(result.timeToCriticalSec).toBe(Infinity);
+  it("escalates to MODERATE when time to critical is under 10 minutes", () => {
+    const result = computeGateRisk(
+      reading({
+        currentCount: 500,
+        capacity: 1000,
+        previousCount: 440,
+        secondsSinceLastReading: 60,
+      }),
+    );
+
+    expect(result.timeToCriticalSec)
+      .toBeGreaterThanOrEqual(300);
+
+    expect(result.timeToCriticalSec)
+      .toBeLessThan(600);
+
+    expect(result.ruleBasedLevel).toBe("MODERATE");
   });
 
-  it('returns Infinity timeToCriticalSec when flow is negative (gate emptying)', () => {
-    const result = computeGateRisk({ gateId: 'A', currentCount: 400, capacity: 1000, previousCount: 500, secondsSinceLastReading: 30 });
-    expect(result.timeToCriticalSec).toBe(Infinity);
+  it("rejects an empty gate ID", () => {
+    expect(() =>
+      computeGateRisk(
+        reading({gateId: "   "}),
+      ),
+    ).toThrow(TypeError);
   });
 
-  it('throws a RangeError when capacity is zero or negative', () => {
-    expect(() => computeGateRisk({ gateId: 'A', currentCount: 10, capacity: 0, previousCount: 0, secondsSinceLastReading: 30 }))
-      .toThrow(RangeError);
+  it("rejects zero or negative capacity", () => {
+    expect(() =>
+      computeGateRisk(
+        reading({capacity: 0}),
+      ),
+    ).toThrow(RangeError);
+
+    expect(() =>
+      computeGateRisk(
+        reading({capacity: -1}),
+      ),
+    ).toThrow(RangeError);
   });
 
-  it('does not divide by zero when secondsSinceLastReading is 0', () => {
-    const result = computeGateRisk({ gateId: 'A', currentCount: 500, capacity: 1000, previousCount: 480, secondsSinceLastReading: 0 });
-    expect(result.netFlowPerMin).toBe(0);
+  it("rejects non-finite capacity", () => {
+    expect(() =>
+      computeGateRisk(
+        reading({capacity: Number.NaN}),
+      ),
+    ).toThrow(RangeError);
   });
 
-  it('clamps densityPct at 100 even if currentCount exceeds capacity (sensor overcount)', () => {
-    const result = computeGateRisk({ gateId: 'A', currentCount: 1100, capacity: 1000, previousCount: 1000, secondsSinceLastReading: 30 });
-    expect(result.densityPct).toBe(100);
+  it("rejects negative current count", () => {
+    expect(() =>
+      computeGateRisk(
+        reading({currentCount: -1}),
+      ),
+    ).toThrow(RangeError);
   });
 
-  it('ignores readings older than 60s to prevent stale data from distorting trends', () => {
-    const result = computeGateRisk({ gateId: 'A', currentCount: 600, capacity: 1000, previousCount: 200, secondsSinceLastReading: 120 });
-    expect(result.netFlowPerMin).toBe(0);
-    expect(result.timeToCriticalSec).toBe(Infinity);
+  it("rejects negative previous count", () => {
+    expect(() =>
+      computeGateRisk(
+        reading({previousCount: -1}),
+      ),
+    ).toThrow(RangeError);
+  });
+
+  it("rejects negative elapsed time", () => {
+    expect(() =>
+      computeGateRisk(
+        reading({
+          secondsSinceLastReading: -1,
+        }),
+      ),
+    ).toThrow(RangeError);
+  });
+
+  it("rejects non-finite elapsed time", () => {
+    expect(() =>
+      computeGateRisk(
+        reading({
+          secondsSinceLastReading: Number.NaN,
+        }),
+      ),
+    ).toThrow(RangeError);
+  });
+
+  it("accepts backend compatibility context fields", () => {
+    const result = computeGateRisk(
+      reading({
+        corridorWidthM: 4,
+        isRaining: true,
+      }),
+    );
+
+    expect(result.gateId).toBe("A");
+    expect(result.ruleBasedLevel).toBe("LOW");
   });
 });
