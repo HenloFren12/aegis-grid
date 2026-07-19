@@ -26,13 +26,13 @@ const projectId =
 
 if (!apiKey) {
   throw new Error(
-    'Missing VITE_FIREBASE_API_KEY in the root .env file.',
+    'Missing VITE_FIREBASE_API_KEY.',
   );
 }
 
 if (!projectId) {
   throw new Error(
-    'Missing VITE_FIREBASE_PROJECT_ID in the root .env file.',
+    'Missing VITE_FIREBASE_PROJECT_ID.',
   );
 }
 
@@ -45,40 +45,56 @@ const app =
 const db =
   getFirestore(app);
 
-const GATE_IDS = [
-  'A',
-  'B',
-  'C',
-  'D',
+const GATES = [
+  {
+    id: 'A',
+    name:
+      'Gate A — North Entrance',
+  },
+
+  {
+    id: 'B',
+    name:
+      'Gate B — South Entrance',
+  },
+
+  {
+    id: 'C',
+    name:
+      'Gate C — East Entrance',
+  },
+
+  {
+    id: 'D',
+    name:
+      'Gate D — West Entrance',
+  },
 ] as const;
+
+type GateId =
+  (typeof GATES)[number]['id'];
 
 const CAPACITY = 1000;
 
-const UPDATE_INTERVAL_MS =
-  5000;
+const INTERVAL_MS = 5000;
 
 const counts: Record<
-  (typeof GATE_IDS)[number],
+  GateId,
   number
 > = {
-  A: 200,
-  B: 300,
-  C: 400,
-  D: 250,
+  A: 220,
+  B: 320,
+  C: 430,
+  D: 260,
 };
 
 async function updateGate(
-  gateId:
-    (typeof GATE_IDS)[number],
+  gate: (typeof GATES)[number],
 ): Promise<void> {
   const previousCount =
-    counts[gateId];
+    counts[gate.id];
 
-  /*
-   * Mostly positive flow with occasional
-   * decreases to simulate realistic movement.
-   */
-  const randomDelta =
+  const delta =
     Math.floor(
       Math.random() * 71,
     ) - 15;
@@ -87,25 +103,19 @@ async function updateGate(
     Math.max(
       0,
       previousCount +
-        randomDelta,
+        delta,
     );
 
-  counts[gateId] =
+  counts[gate.id] =
     currentCount;
 
   const reading = {
-    gateId,
-
+    gateId: gate.id,
     currentCount,
-
-    capacity:
-      CAPACITY,
-
+    capacity: CAPACITY,
     previousCount,
-
     secondsSinceLastReading:
-      UPDATE_INTERVAL_MS /
-      1000,
+      INTERVAL_MS / 1000,
   };
 
   const risk =
@@ -113,15 +123,26 @@ async function updateGate(
       reading,
     );
 
+  /*
+   * Stable document ID means every tick
+   * UPDATES gates/A, gates/B, gates/C,
+   * and gates/D.
+   *
+   * It never creates alternative gate
+   * identities.
+   */
   await setDoc(
     doc(
       db,
       'gates',
-      gateId,
+      gate.id,
     ),
 
     {
       ...reading,
+
+      gateName:
+        gate.name,
 
       densityPct:
         risk.densityPct,
@@ -146,7 +167,7 @@ async function updateGate(
         risk.ruleBasedLevel ===
         'LOW'
           ? 'Gate operating normally.'
-          : 'Risk detected. Cross-gate reasoning pending.',
+          : 'Risk detected. Contextual reasoning pending.',
 
       recommendedGate:
         null,
@@ -170,28 +191,22 @@ async function updateGate(
   );
 
   console.log(
-    [
-      `Gate ${gateId}`,
-      `${risk.densityPct.toFixed(1)}%`,
-      risk.ruleBasedLevel,
-      `count=${currentCount}/${CAPACITY}`,
-    ].join(' | '),
+    `${gate.id} | ${gate.name} | ${risk.densityPct.toFixed(
+      1,
+    )}% | ${risk.ruleBasedLevel}`,
   );
 }
 
-async function simulatorTick(): Promise<void> {
+async function tick(): Promise<void> {
   try {
     await Promise.all(
-      GATE_IDS.map(
-        (gateId) =>
-          updateGate(
-            gateId,
-          ),
+      GATES.map(
+        updateGate,
       ),
     );
 
     console.log(
-      `[${new Date().toISOString()}] Simulator tick completed.`,
+      `[${new Date().toISOString()}] Updated exactly four canonical gates.`,
     );
   } catch (error) {
     console.error(
@@ -202,34 +217,24 @@ async function simulatorTick(): Promise<void> {
 }
 
 console.log(
-  'Aegis Grid gate simulator started.',
+  'Aegis Grid simulator started.',
 );
 
-console.log(
-  `Updating gates every ${
-    UPDATE_INTERVAL_MS /
-    1000
-  } seconds. Press Ctrl+C to stop.`,
-);
-
-void simulatorTick();
+void tick();
 
 const interval =
   setInterval(
     () => {
-      void simulatorTick();
+      void tick();
     },
-
-    UPDATE_INTERVAL_MS,
+    INTERVAL_MS,
   );
 
 function shutdown(): void {
-  console.log(
-    '\nStopping Aegis Grid gate simulator...',
-  );
+  clearInterval(interval);
 
-  clearInterval(
-    interval,
+  console.log(
+    'Aegis Grid simulator stopped.',
   );
 
   process.exit(0);

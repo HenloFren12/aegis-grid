@@ -18,12 +18,22 @@ import { db } from '../../config/firebase';
 
 import '../../styles/riskPalette.css';
 
+interface IncidentReport {
+  id?: string;
+  category?: string;
+  text?: string;
+  timestampMs?: number;
+  lat?: number;
+  lng?: number;
+  gateId?: string | null;
+  locationLabel?: string;
+}
+
 interface QueuedIncident {
   id: string;
   severity: number;
   confidence: number;
   timestampMs: number;
-  updatedAtMs?: number;
 
   reasoningTrace: string;
 
@@ -33,9 +43,11 @@ interface QueuedIncident {
 
   status: string;
 
-  reportCount?: number;
+  reportCount: number;
 
-  categories?: string[];
+  categories: string[];
+
+  reports: IncidentReport[];
 
   centroid?: {
     lat: number;
@@ -43,15 +55,82 @@ interface QueuedIncident {
   };
 }
 
+const CATEGORY_LABELS: Record<
+  string,
+  string
+> = {
+  medical: 'Medical',
+  security: 'Security',
+  lost_child: 'Lost Child',
+  other: 'Other',
+};
+
+function getCategoryLabel(
+  category: string,
+): string {
+  return (
+    CATEGORY_LABELS[
+      category
+    ] ??
+    category.replace(
+      /_/g,
+      ' ',
+    )
+  );
+}
+
+function getIncidentTitle(
+  incident: QueuedIncident,
+): string {
+  if (
+    incident.categories.length ===
+    0
+  ) {
+    return 'Operational Incident';
+  }
+
+  if (
+    incident.categories.length ===
+    1
+  ) {
+    return `${getCategoryLabel(
+      incident.categories[0],
+    )} Incident`;
+  }
+
+  return 'Multi-Signal Incident';
+}
+
+function getReportSummary(
+  incident: QueuedIncident,
+): string {
+  const meaningfulReport =
+    incident.reports.find(
+      (report) =>
+        typeof report.text ===
+          'string' &&
+        report.text.trim()
+          .length > 0,
+    );
+
+  if (
+    meaningfulReport?.text
+  ) {
+    return meaningfulReport.text;
+  }
+
+  return incident.reasoningTrace;
+}
+
 function compareIncidents(
   first: QueuedIncident,
   second: QueuedIncident,
 ): number {
   /*
-   * Higher severity always wins.
+   * Severity dominates.
    *
-   * For equal severity, the older incident
-   * receives priority.
+   * Older incidents win ties,
+   * preventing starvation.
    */
   if (
     first.severity !==
@@ -69,24 +148,28 @@ function compareIncidents(
   );
 }
 
-function getRiskStyles(
+function getRiskStyle(
   severity: number,
 ) {
   if (severity >= 5) {
     return {
-      className: 'risk-critical',
-      text: 'Critical',
-      icon: '🚨',
-      border: '#c62828',
+      className:
+        'risk-critical',
+      label: 'Critical',
+      symbol: '🚨',
+      border:
+        '#c62828',
     };
   }
 
   if (severity === 4) {
     return {
-      className: 'risk-high',
-      text: 'High',
-      icon: '⚠️',
-      border: '#ef6c00',
+      className:
+        'risk-high',
+      label: 'High',
+      symbol: '⚠',
+      border:
+        '#ef6c00',
     };
   }
 
@@ -94,31 +177,43 @@ function getRiskStyles(
     return {
       className:
         'risk-moderate',
-      text: 'Moderate',
-      icon: '●',
-      border: '#f9a825',
+      label: 'Moderate',
+      symbol: '●',
+      border:
+        '#f9a825',
     };
   }
 
   return {
-    className: 'risk-low',
-    text: 'Low',
-    icon: '✓',
-    border: '#1565c0',
+    className:
+      'risk-low',
+    label: 'Low',
+    symbol: '✓',
+    border:
+      '#1565c0',
   };
 }
 
 export default function IncidentQueue() {
-  const [incidents, setIncidents] =
-    useState<QueuedIncident[]>([]);
+  const [
+    incidents,
+    setIncidents,
+  ] = useState<
+    QueuedIncident[]
+  >([]);
 
-  const [error, setError] =
-    useState<string | null>(null);
+  const [
+    error,
+    setError,
+  ] = useState<string | null>(
+    null,
+  );
 
-  const navigate = useNavigate();
+  const navigate =
+    useNavigate();
 
   useEffect(() => {
-    const activeIncidentQuery =
+    const incidentQuery =
       query(
         collection(
           db,
@@ -132,19 +227,42 @@ export default function IncidentQueue() {
         ),
       );
 
-    const unsubscribe =
-      onSnapshot(
-        activeIncidentQuery,
+    return onSnapshot(
+      incidentQuery,
 
-        (snapshot) => {
-          const liveIncidents =
-            snapshot.docs
-              .map((document) => {
+      (snapshot) => {
+        const nextIncidents =
+          snapshot.docs
+            .map(
+              (
+                document,
+              ): QueuedIncident => {
                 const data =
                   document.data();
 
+                const reports =
+                  Array.isArray(
+                    data.reports,
+                  )
+                    ? (data.reports as IncidentReport[])
+                    : [];
+
+                const categories =
+                  Array.isArray(
+                    data.categories,
+                  )
+                    ? data.categories.filter(
+                        (
+                          item,
+                        ): item is string =>
+                          typeof item ===
+                          'string',
+                      )
+                    : [];
+
                 return {
-                  id: document.id,
+                  id:
+                    document.id,
 
                   severity:
                     Number(
@@ -159,86 +277,84 @@ export default function IncidentQueue() {
                   timestampMs:
                     Number(
                       data.timestampMs,
-                    ) || Date.now(),
-
-                  updatedAtMs:
-                    Number(
-                      data.updatedAtMs,
-                    ) || undefined,
+                    ) ||
+                    Date.now(),
 
                   reasoningTrace:
                     typeof data.reasoningTrace ===
                     'string'
                       ? data.reasoningTrace
-                      : 'Incident awaiting analysis.',
+                      : 'Incident awaiting operational analysis.',
 
                   reasoningSource:
                     data.reasoningSource,
 
                   status:
-                    data.status ??
-                    'open',
+                    typeof data.status ===
+                    'string'
+                      ? data.status
+                      : 'open',
 
                   reportCount:
                     Number(
                       data.reportCount,
-                    ) || 1,
+                    ) ||
+                    reports.length ||
+                    1,
 
-                  categories:
-                    Array.isArray(
-                      data.categories,
-                    )
-                      ? data.categories
-                      : [],
+                  categories,
+
+                  reports,
 
                   centroid:
                     data.centroid,
-                } satisfies QueuedIncident;
-              })
-              .sort(
-                compareIncidents,
-              );
+                };
+              },
+            )
+            .sort(
+              compareIncidents,
+            );
 
-          setIncidents(
-            liveIncidents,
-          );
+        setIncidents(
+          nextIncidents,
+        );
 
-          setError(null);
-        },
+        setError(null);
+      },
 
-        (snapshotError) => {
-          console.error(
-            'Incident queue synchronization failed:',
-            snapshotError,
-          );
+      (snapshotError) => {
+        console.error(
+          'Incident queue listener failed:',
+          snapshotError,
+        );
 
-          setError(
-            'Unable to synchronize the live incident queue.',
-          );
-        },
-      );
-
-    return unsubscribe;
+        setError(
+          'Unable to synchronize the live incident queue.',
+        );
+      },
+    );
   }, []);
 
   return (
     <section
-      aria-labelledby="incident-queue-heading"
+      aria-labelledby="triage-heading"
       style={{
         display: 'flex',
-        flexDirection: 'column',
-        gap: '1rem',
+        flexDirection:
+          'column',
         height: '100%',
         overflowY: 'auto',
-        paddingRight: '0.5rem',
+        paddingRight:
+          '0.5rem',
       }}
     >
       <h2
-        id="incident-queue-heading"
+        id="triage-heading"
         style={{
           color: 'white',
           marginTop: 0,
-          marginBottom: '0.5rem',
+          marginBottom:
+            '0.75rem',
         }}
       >
         Active Triage Queue
@@ -250,9 +366,13 @@ export default function IncidentQueue() {
           style={{
             background:
               '#3a1616',
-            color: '#ffcdd2',
+            color:
+              '#ffcdd2',
             padding: '1rem',
-            borderRadius: '8px',
+            borderRadius:
+              '6px',
+            marginBottom:
+              '1rem',
           }}
         >
           {error}
@@ -261,7 +381,12 @@ export default function IncidentQueue() {
 
       <div
         aria-live="polite"
-        aria-atomic="false"
+        style={{
+          display: 'flex',
+          flexDirection:
+            'column',
+          gap: '1rem',
+        }}
       >
         {incidents.length ===
         0 ? (
@@ -273,18 +398,28 @@ export default function IncidentQueue() {
               padding: '2rem',
               textAlign:
                 'center',
-              borderRadius: '8px',
+              borderRadius:
+                '8px',
             }}
           >
-            No active incidents at
-            this time.
+            No active incidents.
           </div>
         ) : (
           incidents.map(
             (incident) => {
               const risk =
-                getRiskStyles(
+                getRiskStyle(
                   incident.severity,
+                );
+
+              const title =
+                getIncidentTitle(
+                  incident,
+                );
+
+              const summary =
+                getReportSummary(
+                  incident,
                 );
 
               return (
@@ -307,10 +442,8 @@ export default function IncidentQueue() {
                     borderRadius:
                       '8px',
                     padding:
-                      '1.5rem',
+                      '1.25rem',
                     borderLeft: `6px solid ${risk.border}`,
-                    marginBottom:
-                      '1rem',
                   }}
                 >
                   <div
@@ -322,20 +455,42 @@ export default function IncidentQueue() {
                       alignItems:
                         'flex-start',
                       gap: '1rem',
-                      marginBottom:
-                        '1rem',
                     }}
                   >
-                    <span
-                      className={`risk-badge ${risk.className}`}
-                    >
-                      {risk.icon}{' '}
-                      Priority{' '}
-                      {
-                        incident.severity
-                      }{' '}
-                      — {risk.text}
-                    </span>
+                    <div>
+                      <div
+                        style={{
+                          fontSize:
+                            '0.75rem',
+                          color:
+                            '#aaa',
+                          textTransform:
+                            'uppercase',
+                          letterSpacing:
+                            '0.08em',
+                        }}
+                      >
+                        {risk.symbol}{' '}
+                        Priority{' '}
+                        {
+                          incident.severity
+                        }{' '}
+                        · {
+                          risk.label
+                        }
+                      </div>
+
+                      <h3
+                        style={{
+                          margin:
+                            '0.4rem 0 0',
+                          color:
+                            'white',
+                        }}
+                      >
+                        {title}
+                      </h3>
+                    </div>
 
                     <time
                       dateTime={new Date(
@@ -343,9 +498,11 @@ export default function IncidentQueue() {
                       ).toISOString()}
                       style={{
                         color:
-                          '#aaa',
+                          '#888',
                         fontSize:
-                          '0.85rem',
+                          '0.8rem',
+                        whiteSpace:
+                          'nowrap',
                       }}
                     >
                       {new Date(
@@ -354,49 +511,175 @@ export default function IncidentQueue() {
                     </time>
                   </div>
 
-                  <div
-                    style={{
-                      color:
-                        '#ddd',
-                      fontSize:
-                        '0.9rem',
-                      marginBottom:
-                        '0.75rem',
-                    }}
-                  >
-                    {incident.reportCount ??
-                      1}{' '}
-                    report
-                    {(incident.reportCount ??
-                      1) !== 1
-                      ? 's'
-                      : ''}
-
-                    {' · '}
-
-                    Confidence{' '}
-                    {
-                      incident.confidence
-                    }
-                    %
-                  </div>
+                  {incident.categories
+                    .length > 0 && (
+                    <div
+                      style={{
+                        display:
+                          'flex',
+                        flexWrap:
+                          'wrap',
+                        gap:
+                          '0.4rem',
+                        marginTop:
+                          '0.8rem',
+                      }}
+                    >
+                      {incident.categories.map(
+                        (
+                          category,
+                        ) => (
+                          <span
+                            key={
+                              category
+                            }
+                            style={{
+                              background:
+                                '#303030',
+                              padding:
+                                '0.25rem 0.5rem',
+                              borderRadius:
+                                '4px',
+                              color:
+                                '#ddd',
+                              fontSize:
+                                '0.75rem',
+                              textTransform:
+                                'uppercase',
+                            }}
+                          >
+                            {getCategoryLabel(
+                              category,
+                            )}
+                          </span>
+                        ),
+                      )}
+                    </div>
+                  )}
 
                   <p
                     style={{
                       color:
-                        'white',
-                      fontSize:
-                        '1.05rem',
+                        '#f5f5f5',
                       lineHeight:
-                        '1.5',
-                      marginBottom:
-                        '1.5rem',
+                        1.5,
+                      margin:
+                        '1rem 0 0.5rem',
                     }}
                   >
-                    {
-                      incident.reasoningTrace
-                    }
+                    {summary}
                   </p>
+
+                  {summary !==
+                    incident.reasoningTrace && (
+                    <div
+                      style={{
+                        marginTop:
+                          '0.75rem',
+                        padding:
+                          '0.75rem',
+                        background:
+                          '#171717',
+                        borderRadius:
+                          '6px',
+                      }}
+                    >
+                      <strong
+                        style={{
+                          display:
+                            'block',
+                          color:
+                            '#aaa',
+                          fontSize:
+                            '0.75rem',
+                          textTransform:
+                            'uppercase',
+                          marginBottom:
+                            '0.35rem',
+                        }}
+                      >
+                        AI reasoning
+                      </strong>
+
+                      <span
+                        style={{
+                          color:
+                            '#ccc',
+                          lineHeight:
+                            1.45,
+                        }}
+                      >
+                        {
+                          incident.reasoningTrace
+                        }
+                      </span>
+                    </div>
+                  )}
+
+                  <div
+                    style={{
+                      display:
+                        'grid',
+                      gridTemplateColumns:
+                        'repeat(2, minmax(0, 1fr))',
+                      gap: '0.5rem',
+                      marginTop:
+                        '1rem',
+                    }}
+                  >
+                    <div
+                      style={{
+                        background:
+                          '#272727',
+                        padding:
+                          '0.65rem',
+                        borderRadius:
+                          '5px',
+                      }}
+                    >
+                      <small
+                        style={{
+                          color:
+                            '#999',
+                        }}
+                      >
+                        Reports
+                      </small>
+
+                      <div>
+                        {
+                          incident.reportCount
+                        }
+                      </div>
+                    </div>
+
+                    <div
+                      style={{
+                        background:
+                          '#272727',
+                        padding:
+                          '0.65rem',
+                        borderRadius:
+                          '5px',
+                      }}
+                    >
+                      <small
+                        style={{
+                          color:
+                            '#999',
+                        }}
+                      >
+                        Confidence
+                      </small>
+
+                      <div>
+                        {
+                          incident.confidence
+                        }
+                        %
+                      </div>
+                    </div>
+                  </div>
 
                   <button
                     type="button"
@@ -408,25 +691,25 @@ export default function IncidentQueue() {
                     style={{
                       width:
                         '100%',
+                      marginTop:
+                        '1rem',
+                      minHeight:
+                        '44px',
+                      border:
+                        '1px solid #555',
+                      borderRadius:
+                        '5px',
                       background:
                         '#333',
                       color:
                         'white',
-                      border:
-                        'none',
-                      padding:
-                        '0.75rem',
-                      borderRadius:
-                        '4px',
+                      fontWeight:
+                        700,
                       cursor:
                         'pointer',
-                      fontWeight:
-                        'bold',
                     }}
                   >
-                    Review &amp;
-                    Dispatch
-                    Responder →
+                    Review incident →
                   </button>
                 </article>
               );

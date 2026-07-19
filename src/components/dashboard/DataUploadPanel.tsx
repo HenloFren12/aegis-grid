@@ -1,44 +1,79 @@
-import { useRef, useState } from 'react';
-import { doc, setDoc } from 'firebase/firestore';
+import {
+  useState,
+  type ChangeEvent,
+} from 'react';
+
 import Papa from 'papaparse';
 
-import { db } from '../../config/firebase';
-import { computeGateRisk } from '../../lib/computeGateRisk';
+import {
+  doc,
+  writeBatch,
+} from 'firebase/firestore';
 
-interface ExpectedCSVRow {
-  gateId: string;
-  currentCount: string;
-  capacity: string;
-  previousCount: string;
-  secondsSinceLastReading: string;
+import { db } from '../../config/firebase';
+
+import {
+  computeGateRisk,
+} from '../../lib/computeGateRisk';
+
+import {
+  normalizeGateId,
+  STADIUM_GATES,
+  type GateId,
+} from '../../config/stadiumConfig';
+
+interface CsvRow {
+  gateId?: string;
+  gate?: string;
+  gateName?: string;
+
+  currentCount?: string;
+  current_count?: string;
+
+  capacity?: string;
+
+  previousCount?: string;
+  previous_count?: string;
+
+  secondsSinceLastReading?: string;
+  seconds_since_last_reading?: string;
 }
 
-interface ValidatedGateRow {
-  gateId: string;
+interface NormalizedReading {
+  gateId: GateId;
   currentCount: number;
   capacity: number;
   previousCount: number;
   secondsSinceLastReading: number;
 }
 
-function parseRequiredNumber(
-  value: string | undefined,
+function firstDefined(
+  ...values: Array<
+    string | undefined
+  >
+): string {
+  return (
+    values.find(
+      (value) =>
+        typeof value ===
+          'string' &&
+        value.trim().length > 0,
+    ) ?? ''
+  );
+}
+
+function parseNumber(
+  value: string,
   fieldName: string,
   rowNumber: number,
 ): number {
+  const parsed = Number(
+    value.trim(),
+  );
+
   if (
-    value === undefined ||
-    value === null ||
-    value.trim() === ''
+    !Number.isFinite(parsed)
   ) {
-    throw new Error(
-      `Row ${rowNumber}: missing required value "${fieldName}".`,
-    );
-  }
-
-  const parsed = Number(value);
-
-  if (!Number.isFinite(parsed)) {
     throw new Error(
       `Row ${rowNumber}: "${fieldName}" must be a valid number.`,
     );
@@ -47,63 +82,98 @@ function parseRequiredNumber(
   return parsed;
 }
 
-function validateRow(
-  row: ExpectedCSVRow,
+function normalizeRow(
+  row: CsvRow,
   rowNumber: number,
-): ValidatedGateRow {
-  const gateId = row.gateId?.trim();
+): NormalizedReading {
+  const rawGateId =
+    firstDefined(
+      row.gateId,
+      row.gate,
+      row.gateName,
+    );
+
+  const gateId =
+    normalizeGateId(
+      rawGateId,
+    );
 
   if (!gateId) {
     throw new Error(
-      `Row ${rowNumber}: missing required value "gateId".`,
+      `Row ${rowNumber}: unknown gate "${rawGateId}". Use A, B, C, D, or a recognized gate name.`,
     );
   }
 
-  const currentCount = parseRequiredNumber(
-    row.currentCount,
-    'currentCount',
-    rowNumber,
-  );
-
-  const capacity = parseRequiredNumber(
-    row.capacity,
-    'capacity',
-    rowNumber,
-  );
-
-  const previousCount = parseRequiredNumber(
-    row.previousCount,
-    'previousCount',
-    rowNumber,
-  );
-
-  const secondsSinceLastReading = parseRequiredNumber(
-    row.secondsSinceLastReading,
-    'secondsSinceLastReading',
-    rowNumber,
-  );
-
-  if (currentCount < 0) {
-    throw new Error(
-      `Row ${rowNumber}: "currentCount" cannot be negative.`,
+  const currentCount =
+    parseNumber(
+      firstDefined(
+        row.currentCount,
+        row.current_count,
+      ),
+      'currentCount',
+      rowNumber,
     );
-  }
+
+  const capacity =
+    parseNumber(
+      firstDefined(
+        row.capacity,
+      ),
+      'capacity',
+      rowNumber,
+    );
+
+  const rawPreviousCount =
+    firstDefined(
+      row.previousCount,
+      row.previous_count,
+    );
+
+  const previousCount =
+    rawPreviousCount
+      ? parseNumber(
+          rawPreviousCount,
+          'previousCount',
+          rowNumber,
+        )
+      : currentCount;
+
+  const rawSeconds =
+    firstDefined(
+      row.secondsSinceLastReading,
+      row.seconds_since_last_reading,
+    );
+
+  const secondsSinceLastReading =
+    rawSeconds
+      ? parseNumber(
+          rawSeconds,
+          'secondsSinceLastReading',
+          rowNumber,
+        )
+      : 60;
 
   if (capacity <= 0) {
     throw new Error(
-      `Row ${rowNumber}: "capacity" must be greater than 0.`,
+      `Row ${rowNumber}: capacity must be greater than zero.`,
     );
   }
 
-  if (previousCount < 0) {
+  if (
+    currentCount < 0 ||
+    previousCount < 0
+  ) {
     throw new Error(
-      `Row ${rowNumber}: "previousCount" cannot be negative.`,
+      `Row ${rowNumber}: crowd counts cannot be negative.`,
     );
   }
 
-  if (secondsSinceLastReading < 0) {
+  if (
+    secondsSinceLastReading <
+    0
+  ) {
     throw new Error(
-      `Row ${rowNumber}: "secondsSinceLastReading" cannot be negative.`,
+      `Row ${rowNumber}: secondsSinceLastReading cannot be negative.`,
     );
   }
 
@@ -117,370 +187,421 @@ function validateRow(
 }
 
 export default function DataUploadPanel() {
-  const [logs, setLogs] = useState<string[]>([]);
-  const [isProcessing, setIsProcessing] = useState(false);
+  const [
+    isUploading,
+    setIsUploading,
+  ] = useState(false);
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [
+    message,
+    setMessage,
+  ] = useState<string | null>(
+    null,
+  );
 
-  const addLog = (message: string) => {
-    setLogs((previousLogs) => [
-      message,
-      ...previousLogs,
-    ]);
-  };
+  const [
+    error,
+    setError,
+  ] = useState<string | null>(
+    null,
+  );
 
-  const processFile = (file: File) => {
-    setIsProcessing(true);
+  const handleFile =
+    (
+      event: ChangeEvent<HTMLInputElement>,
+    ) => {
+      const file =
+        event.target.files?.[0];
 
-    addLog(
-      `[SYSTEM] Initiating parse for: ${file.name}`,
-    );
+      event.target.value = '';
 
-    Papa.parse<ExpectedCSVRow>(file, {
-      header: true,
-      skipEmptyLines: true,
+      if (!file) {
+        return;
+      }
 
-      complete: async (results) => {
-        try {
-          if (results.errors.length > 0) {
-            results.errors.forEach((error) => {
-              addLog(
-                `[PARSE WARNING] Row ${
-                  error.row !== undefined
-                    ? error.row + 1
-                    : 'unknown'
-                }: ${error.message}`,
-              );
-            });
-          }
+      if (
+        !file.name
+          .toLowerCase()
+          .endsWith('.csv')
+      ) {
+        setError(
+          'Please upload a CSV file.',
+        );
 
-          const requiredHeaders = [
-            'gateId',
-            'currentCount',
-            'capacity',
-            'previousCount',
-            'secondsSinceLastReading',
-          ];
+        return;
+      }
 
-          const actualHeaders =
-            results.meta.fields ?? [];
+      setError(null);
+      setMessage(null);
+      setIsUploading(true);
 
-          const missingHeaders =
-            requiredHeaders.filter(
-              (header) =>
-                !actualHeaders.includes(header),
-            );
+      Papa.parse<CsvRow>(
+        file,
+        {
+          header: true,
+          skipEmptyLines: true,
 
-          if (missingHeaders.length > 0) {
-            addLog(
-              `[FATAL ERROR] Missing required CSV headers: ${missingHeaders.join(
-                ', ',
-              )}`,
-            );
-
-            return;
-          }
-
-          addLog(
-            `[SUCCESS] Parsed ${results.data.length} rows. Validating schema and computing gate risk...`,
-          );
-
-          let successCount = 0;
-          let errorCount = 0;
-
-          for (
-            let index = 0;
-            index < results.data.length;
-            index += 1
-          ) {
-            const row = results.data[index];
-            const rowNumber = index + 1;
-
+          complete: async (
+            results,
+          ) => {
             try {
-              const validated =
-                validateRow(row, rowNumber);
+              if (
+                results.errors.length >
+                0
+              ) {
+                throw new Error(
+                  results.errors
+                    .map(
+                      (item) =>
+                        item.message,
+                    )
+                    .join('; '),
+                );
+              }
+
+              if (
+                results.data.length ===
+                0
+              ) {
+                throw new Error(
+                  'The CSV contains no gate readings.',
+                );
+              }
 
               /*
-               * Deterministic feature extraction happens
-               * immediately during ingestion.
+               * Map by canonical gate ID.
                *
-               * This guarantees that uploaded jury data
-               * produces usable risk information even before
-               * any asynchronous GenAI reasoning completes.
+               * If a CSV accidentally contains
+               * Gate A twice, the LAST row wins
+               * instead of creating duplicate
+               * database identities.
                */
-              const risk = computeGateRisk({
-                gateId: validated.gateId,
-                currentCount:
-                  validated.currentCount,
-                capacity: validated.capacity,
-                previousCount:
-                  validated.previousCount,
-                secondsSinceLastReading:
-                  validated.secondsSinceLastReading,
-              });
+              const readings =
+                new Map<
+                  GateId,
+                  NormalizedReading
+                >();
 
-              /*
-               * Firestore cannot store Infinity.
-               *
-               * null means the gate is not currently trending
-               * toward capacity, so there is no finite
-               * time-to-critical value.
-               */
-              const timeToCriticalSec =
-                Number.isFinite(
-                  risk.timeToCriticalSec,
-                )
-                  ? risk.timeToCriticalSec
-                  : null;
+              results.data.forEach(
+                (
+                  row,
+                  index,
+                ) => {
+                  const normalized =
+                    normalizeRow(
+                      row,
+                      index + 2,
+                    );
 
-              const gateDocument = {
-                gateId: validated.gateId,
-
-                // Raw gate reading
-                currentCount:
-                  validated.currentCount,
-                capacity: validated.capacity,
-                previousCount:
-                  validated.previousCount,
-                secondsSinceLastReading:
-                  validated.secondsSinceLastReading,
-
-                // Deterministic risk features
-                densityPct: risk.densityPct,
-                netFlowPerMin:
-                  risk.netFlowPerMin,
-                timeToCriticalSec,
-                ruleBasedLevel:
-                  risk.ruleBasedLevel,
-
-                /*
-                 * riskLevel is retained as the canonical
-                 * dashboard-facing field.
-                 *
-                 * GenAI reasoning may later enrich the gate,
-                 * but deterministic risk remains immediately
-                 * available.
-                 */
-                riskLevel:
-                  risk.ruleBasedLevel,
-
-                // GenAI enrichment fields
-                narrative: null,
-                recommendedGate: null,
-
-                reasoningStatus:
-                  risk.ruleBasedLevel === 'LOW'
-                    ? 'not_required'
-                    : 'pending',
-
-                // Canonical timestamp field
-                lastUpdatedMs: Date.now(),
-
-                // Traceability for jury-uploaded data
-                dataSource: 'csv_upload',
-              };
-
-              const gateRef = doc(
-                db,
-                'gates',
-                validated.gateId,
-              );
-
-              await setDoc(
-                gateRef,
-                gateDocument,
-                {
-                  merge: true,
+                  readings.set(
+                    normalized.gateId,
+                    normalized,
+                  );
                 },
               );
 
-              successCount += 1;
+              if (
+                readings.size > 4
+              ) {
+                throw new Error(
+                  'Aegis Grid supports exactly four canonical gates: A, B, C, and D.',
+                );
+              }
 
-              addLog(
-                `[INGESTED] Gate ${
-                  validated.gateId
-                } → ${risk.densityPct.toFixed(
-                  1,
-                )}% → ${risk.ruleBasedLevel}`,
+              const batch =
+                writeBatch(db);
+
+              for (
+                const reading of
+                readings.values()
+              ) {
+                const risk =
+                  computeGateRisk({
+                    gateId:
+                      reading.gateId,
+
+                    currentCount:
+                      reading.currentCount,
+
+                    capacity:
+                      reading.capacity,
+
+                    previousCount:
+                      reading.previousCount,
+
+                    secondsSinceLastReading:
+                      reading.secondsSinceLastReading,
+                  });
+
+                /*
+                 * CRITICAL:
+                 *
+                 * Firestore document ID is the
+                 * canonical gate ID.
+                 *
+                 * Uploading the same gate again
+                 * updates the same document.
+                 */
+                const gateRef =
+                  doc(
+                    db,
+                    'gates',
+                    reading.gateId,
+                  );
+
+                batch.set(
+                  gateRef,
+                  {
+                    gateId:
+                      reading.gateId,
+
+                    gateName:
+                      STADIUM_GATES[
+                        reading.gateId
+                      ].name,
+
+                    currentCount:
+                      reading.currentCount,
+
+                    capacity:
+                      reading.capacity,
+
+                    previousCount:
+                      reading.previousCount,
+
+                    secondsSinceLastReading:
+                      reading.secondsSinceLastReading,
+
+                    densityPct:
+                      risk.densityPct,
+
+                    netFlowPerMin:
+                      risk.netFlowPerMin,
+
+                    timeToCriticalSec:
+                      Number.isFinite(
+                        risk.timeToCriticalSec,
+                      )
+                        ? risk.timeToCriticalSec
+                        : null,
+
+                    ruleBasedLevel:
+                      risk.ruleBasedLevel,
+
+                    riskLevel:
+                      risk.ruleBasedLevel,
+
+                    narrative:
+                      risk.ruleBasedLevel ===
+                      'LOW'
+                        ? 'Gate operating normally.'
+                        : 'Risk detected. Contextual reasoning pending.',
+
+                    recommendedGate:
+                      null,
+
+                    reasoningStatus:
+                      risk.ruleBasedLevel ===
+                      'LOW'
+                        ? 'not_required'
+                        : 'pending',
+
+                    lastUpdatedMs:
+                      Date.now(),
+
+                    dataSource:
+                      'csv_upload',
+                  },
+
+                  {
+                    merge: true,
+                  },
+                );
+              }
+
+              await batch.commit();
+
+              setMessage(
+                `Successfully updated ${readings.size} canonical gate${readings.size === 1 ? '' : 's'}. Existing gates were updated rather than duplicated.`,
               );
-            } catch (error: unknown) {
-              errorCount += 1;
+            } catch (
+              uploadError
+            ) {
+              console.error(
+                'CSV ingestion failed:',
+                uploadError,
+              );
 
-              const message =
-                error instanceof Error
-                  ? error.message
-                  : 'Unknown row-processing error.';
-
-              addLog(
-                `[ROW ERROR] ${message}`,
+              setError(
+                uploadError instanceof
+                  Error
+                  ? uploadError.message
+                  : 'CSV ingestion failed.',
+              );
+            } finally {
+              setIsUploading(
+                false,
               );
             }
-          }
+          },
 
-          addLog(
-            `[COMPLETE] Ingestion finished. ${successCount} processed, ${errorCount} rejected.`,
-          );
-        } catch (error: unknown) {
-          const message =
-            error instanceof Error
-              ? error.message
-              : 'Unknown ingestion error.';
+          error: (
+            parseError,
+          ) => {
+            console.error(
+              'CSV parsing failed:',
+              parseError,
+            );
 
-          addLog(
-            `[FATAL ERROR] Ingestion failed: ${message}`,
-          );
-        } finally {
-          setIsProcessing(false);
-        }
-      },
+            setError(
+              parseError.message,
+            );
 
-      error: (error) => {
-        addLog(
-          `[FATAL ERROR] CSV parsing failed: ${error.message}`,
-        );
-
-        setIsProcessing(false);
-      },
-    });
-  };
-
-  const handleUploadClick = () => {
-    const file =
-      fileInputRef.current?.files?.[0];
-
-    if (!file) {
-      addLog(
-        '[WARNING] Please select a CSV file first.',
+            setIsUploading(
+              false,
+            );
+          },
+        },
       );
-
-      return;
-    }
-
-    processFile(file);
-  };
+    };
 
   return (
-    <div
+    <main
       style={{
-        padding: '2rem',
-        fontFamily: 'system-ui',
-        maxWidth: '800px',
-        margin: '0 auto',
+        minHeight: '100vh',
+        background: '#121212',
         color: 'white',
+        padding: '2rem',
+        fontFamily:
+          'system-ui',
+        boxSizing:
+          'border-box',
       }}
     >
-      <h2>Stadium Data Ingestion Engine</h2>
-
-      <p style={{ color: '#aaa' }}>
-        Upload a CSV containing live gate readings.
-        Valid rows are schema-validated, processed
-        through the deterministic Foresight Engine,
-        and written to Firestore for live dashboard
-        updates and AI reasoning.
-      </p>
-
       <div
         style={{
-          background: '#1e1e1e',
-          padding: '2rem',
-          borderRadius: '8px',
-          marginBottom: '2rem',
+          maxWidth: '760px',
+          margin: '0 auto',
         }}
       >
-        <div
+        <h1>
+          Gate Data Ingestion
+        </h1>
+
+        <p
           style={{
-            display: 'flex',
-            gap: '1rem',
-            alignItems: 'center',
+            color: '#bbb',
+            lineHeight: 1.6,
           }}
         >
-          <input
-            type="file"
-            accept=".csv,text/csv"
-            ref={fileInputRef}
-            disabled={isProcessing}
-            aria-label="Select gate readings CSV file"
-            style={{
-              padding: '0.5rem',
-              background: '#2a2a2a',
-              color: 'white',
-              border: '1px solid #444',
-              borderRadius: '4px',
-              flexGrow: 1,
-            }}
-          />
+          Upload real or test
+          telemetry for Gates A,
+          B, C, and D. Re-uploading
+          a gate updates its
+          existing Firestore record
+          rather than creating a
+          duplicate gate.
+        </p>
 
-          <button
-            type="button"
-            onClick={handleUploadClick}
-            disabled={isProcessing}
-            aria-busy={isProcessing}
+        <section
+          style={{
+            marginTop: '2rem',
+            padding: '1.5rem',
+            border:
+              '1px solid #333',
+            borderRadius: '8px',
+            background: '#1b1b1b',
+          }}
+        >
+          <label
+            htmlFor="gate-csv"
             style={{
-              background: '#1976d2',
-              color: 'white',
-              padding: '0.75rem 1.5rem',
-              border: 'none',
-              borderRadius: '4px',
-              fontWeight: 'bold',
-              cursor: isProcessing
-                ? 'wait'
-                : 'pointer',
+              display: 'block',
+              fontWeight: 700,
+              marginBottom:
+                '0.75rem',
             }}
           >
-            {isProcessing
-              ? 'Processing...'
-              : 'UPLOAD & INGEST'}
-          </button>
-        </div>
+            Gate telemetry CSV
+          </label>
 
-        <div
-          style={{
-            marginTop: '1rem',
-            fontSize: '0.85rem',
-            color: '#888',
-          }}
-        >
-          <strong>
-            Required CSV Headers:
-          </strong>{' '}
-          gateId, currentCount, capacity,
-          previousCount,
-          secondsSinceLastReading
-        </div>
-      </div>
+          <input
+            id="gate-csv"
+            type="file"
+            accept=".csv,text/csv"
+            disabled={
+              isUploading
+            }
+            onChange={
+              handleFile
+            }
+          />
 
-      <div
-        role="log"
-        aria-live="polite"
-        aria-label="Data ingestion log"
-        style={{
-          background: 'black',
-          color: '#00ff00',
-          padding: '1rem',
-          borderRadius: '8px',
-          height: '300px',
-          overflowY: 'auto',
-          fontFamily: 'monospace',
-        }}
-      >
-        {logs.length === 0 ? (
-          <p style={{ color: '#555' }}>
-            System ready. Awaiting data
-            payload...
+          <p
+            style={{
+              color: '#999',
+              fontSize:
+                '0.9rem',
+              marginTop: '1rem',
+            }}
+          >
+            Required fields:
+            gateId (or gate/gateName),
+            currentCount and
+            capacity. Optional:
+            previousCount and
+            secondsSinceLastReading.
           </p>
-        ) : (
-          logs.map((log, index) => (
+
+          {isUploading && (
+            <p
+              role="status"
+              aria-live="polite"
+            >
+              Processing CSV…
+            </p>
+          )}
+
+          {message && (
             <div
-              key={`${index}-${log}`}
+              role="status"
+              aria-live="polite"
               style={{
-                marginBottom: '0.5rem',
+                marginTop:
+                  '1rem',
+                padding: '1rem',
+                background:
+                  '#15351f',
+                border:
+                  '1px solid #2e7d32',
+                borderRadius:
+                  '6px',
               }}
             >
-              {log}
+              {message}
             </div>
-          ))
-        )}
+          )}
+
+          {error && (
+            <div
+              role="alert"
+              style={{
+                marginTop:
+                  '1rem',
+                padding: '1rem',
+                background:
+                  '#3a1616',
+                border:
+                  '1px solid #c62828',
+                borderRadius:
+                  '6px',
+              }}
+            >
+              {error}
+            </div>
+          )}
+        </section>
       </div>
-    </div>
+    </main>
   );
 }
