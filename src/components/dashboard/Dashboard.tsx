@@ -23,10 +23,26 @@ interface GateViewModel {
   lastUpdatedMs: number;
 }
 
-interface IncidentViewModel {
+export interface IncidentViewModel {
   id: string;
   status: string;
   severity: number;
+  confidence?: number;
+  timestampMs?: number;
+  reasoningTrace?: string;
+  reasoningSource?: 'gemini' | 'deterministic_fallback';
+  reportCount?: number;
+  categories?: string[];
+  reports?: Array<{
+    id?: string;
+    category?: string;
+    text?: string;
+    timestampMs?: number;
+    lat?: number;
+    lng?: number;
+    gateId?: string | null;
+    locationLabel?: string;
+  }>;
   centroid?: { lat: number; lng: number };
   [key: string]: unknown;
 }
@@ -323,7 +339,7 @@ export default function Dashboard() {
         </section>
 
         <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, overflow: 'hidden' }}>
-          <IncidentQueue />
+          <IncidentQueue incidents={incidents} />
         </div>
       </aside>
     </main>
