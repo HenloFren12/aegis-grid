@@ -1,130 +1,205 @@
-# Aegis Grid
-
-**Predictive Crowd Safety & Incident Fusion for Smart Stadium Operations**
-
-Aegis Grid is a real-time decision-support platform designed for **stadium safety organizers** operating high-density tournament venues such as the FIFA World Cup 2026. It combines deterministic crowd-risk algorithms, Firebase real-time infrastructure, and Generative AI reasoning to help a command center answer three urgent questions:
-
-1. **Where is crowd risk building before it becomes critical?**
-2. **Which incoming emergency reports describe the same real-world incident, and what needs attention first?**
-3. **What should an operator do next, and why?**
-
-The project deliberately focuses on one primary persona — **Organizers / Safety Command Center staff** — across **Crowd Management, Real-Time Decisions, and Operational Intelligence**. A public `/sos` surface lets fans act as an emergency signal source without turning the project into a generic fan-experience app.
+# 🛡️ Aegis Grid
 
 ---
 
-## Why Aegis Grid?
+**Live Demo Link:** https://aegis-grid-2026.web.app
+**Demo Credentials:** aegisadm26@ops.com, adminag26.
 
-Traditional monitoring can tell an operator that a gate is crowded. Aegis Grid is designed to go further: calculate crowd trends deterministically, reason across multiple gates, fuse overlapping reports, and produce actionable explanations.
+---- 
 
-A core design principle is:
+## Predictive Crowd Safety & Explainable Incident Intelligence for Smart Stadium Operations
 
-> **Use algorithms for facts and optimization; use GenAI for contextual judgment and explanation.**
+> **Predict earlier. Fuse signals. Explain decisions.**
 
-For example, arithmetic determines that Gate C is approaching capacity. Generative AI is used to reason across the wider venue state and explain why redirecting toward one alternative may be safer than another.
+Aegis Grid is a real-time stadium safety decision-support platform designed for **Organizers / Safety Command Center teams** operating high-density tournament venues such as the FIFA World Cup 2026.
 
----
+It focuses on three connected Challenge 4 verticals:
 
-## Core Capabilities
+- **Crowd Management**
+- **Real-Time Decisions**
+- **Operational Intelligence**
 
-### 1. Foresight Engine — Predictive Gate Risk
+Fans are not treated as a second product persona. The public SOS surface treats them as a **human emergency sensor network** that strengthens the organizer's operational picture.
 
-Gate readings are transformed into operational features including:
+## Core Engineering Principle
+
+> **Algorithms establish facts. Generative AI interprets context, ambiguity, and operational meaning.**
+
+Aegis Grid deliberately avoids using an LLM for arithmetic or standard algorithms. Deterministic systems calculate crowd risk, cluster signals, prioritize incidents, and support crowd-aware routing. Generative AI is reserved for contextual interpretation and explainable reasoning where rules alone are insufficient.
+
+## What Makes Aegis Grid Different
+
+###  Foresight, Not Just Monitoring
+Gate telemetry is transformed into density, net crowd flow, time-to-critical capacity, and deterministic risk states so organizers can see developing pressure rather than only current occupancy.
+
+###  Fusion, Not Alert Spam
+Spatial-temporal clustering helps correlate fragmented emergency reports into coherent incident evidence instead of blindly creating one incident per report.
+
+###  Algorithms for Facts, GenAI for Judgment
+Deterministic algorithms handle measurable facts. Gemini handles ambiguous language, mixed-category evidence, contextual interpretation, and explainable operational reasoning.
+
+###  Fans as Human Sensors
+The public `/sos` route contributes emergency evidence without turning Aegis Grid into a generic fan super-app or diluting the Organizer persona.
+
+###  Truthful Uncertainty
+Unknown operational values remain unknown. Aegis Grid avoids presenting fabricated certainty such as unvalidated responder ETAs.
+
+###  Real-Data Evaluation
+CSV ingestion allows evaluators to feed external gate data into the operational pipeline rather than relying only on static demo data.
+
+## Core Systems
+
+### 1. Foresight Engine
+
+Gate readings are transformed into:
 
 - crowd density percentage;
-- net crowd flow per minute;
+- net crowd flow;
 - estimated time to critical capacity;
-- deterministic risk level: `LOW`, `MODERATE`, `HIGH`, or `CRITICAL`;
-- stale-reading handling to prevent old sensor data from creating misleading trends.
+- deterministic risk level;
+- stale-reading-aware operational state.
 
-The deterministic calculation is intentionally separated from AI reasoning. This keeps predictable mathematics testable while reserving model calls for higher-level comparative reasoning.
+Core feature extraction is designed as **O(1)** per reading and handles invalid capacity, zero-time intervals, stale readings, over-capacity telemetry, and flat or negative flow.
 
-### 2. Fusion Queue — Incident Intelligence
+### 2. Fusion Queue
 
-Emergency signals can enter through the public SOS interface and be processed by Firebase Cloud Functions.
+Emergency signals flow through a structured pipeline:
 
-The project includes:
+```text
+Public SOS / reports
+        ↓
+Firestore
+        ↓
+Cloud Functions
+        ↓
+Normalization + validation
+        ↓
+Spatial-temporal clustering
+        ↓
+Contextual reasoning / deterministic fallback
+        ↓
+Incident intelligence
+        ↓
+Real-time organizer interface
+```
 
-- spatial-temporal report clustering;
-- mixed-category incident handling;
-- severity classification with deterministic fallback behavior;
-- incident prioritization data structures;
-- crowd-weighted responder-routing algorithms.
+The architecture supports mixed-category evidence, severity/confidence reasoning, deterministic fallbacks, priority infrastructure, and explainable incident details.
 
-This architecture is designed to reduce duplicate alerts and turn fragmented reports into more useful operational context.
+### 3. Public Emergency SOS
 
-### 3. SOS Trigger — Public Emergency Signal
+The `/sos` route is intentionally narrow and fast.
 
-The `/sos` route is intentionally narrow in scope. It provides a fast emergency-reporting surface rather than a full fan application.
+It supports emergency category, location/gate context, optional description, validation, accessible interaction, and public submission without exposing protected organizer data.
 
-The interface supports emergency categories, location/zone context, Firestore submission, validation, and accessible interaction patterns.
+### 4. Real-Time Command Center
 
-### 4. Real-Time Command Dashboard
-
-The protected command-center interface uses Firestore real-time listeners to surface:
+The protected organizer interface surfaces:
 
 - live gate conditions;
-- risk states and reasoning;
-- open incidents;
-- incident details;
+- risk states;
+- incident queues;
+- incident details and raw evidence;
+- reasoning traces and provenance;
 - venue-map context;
-- audit information.
+- operational audit information.
+
+Firestore real-time listeners synchronize operational state without polling.
 
 ### 5. Real-Data Ingestion
 
-`DataUploadPanel.tsx` provides a CSV ingestion path so external gate data can be validated, processed, and fed into the same operational pipeline rather than relying only on static demo content.
+CSV data is validated and normalized into canonical gate entities before entering the same Firestore-driven operational pipeline used by the dashboard.
 
-A separate `simulateGateReadings.ts` script can generate changing telemetry for development and demonstration.
+Repeated uploads update logical gates rather than intentionally creating duplicate venue entities.
 
----
+A separate `scripts/simulateGateReadings.ts` utility supports development and demonstration.
 
-## System Flow
+## Why Generative AI Is Necessary
+
+A deterministic system can establish facts such as:
 
 ```text
-Gate telemetry / CSV input
-          |
-          v
-      Firestore
-          |
-          v
-onGateReadingWritten Cloud Function
-          |
-          +--> deterministic computeGateRisk()
-          |
-          +--> contextual Gemini reasoning when required
-          |
-          v
- Updated gate document
-          |
-          v
- Real-time Dashboard
-
-
-Fan SOS report
-          |
-          v
-   Firestore /reports
-          |
-          v
- onReportCreate Cloud Function
-          |
-          +--> normalize + validate
-          +--> spatial/temporal clustering
-          +--> severity reasoning / fallback
-          |
-          v
-   Firestore /incidents
-          |
-          v
- Incident Queue / Detail
+Gate C density = 91%
+Three reports occurred near Gate C
+Reports contain both medical and security signals
 ```
 
----
+But natural-language evidence may describe one evolving event in very different ways:
+
+```text
+"People are crushing forward."
+"Someone went down."
+"Can't move near C."
+```
+
+Aegis Grid uses Generative AI where contextual judgment is genuinely useful: interpreting ambiguous cross-signal evidence and producing an explanation a human operator can understand.
+
+```text
+MEASURABLE FACTS
+      ↓
+Deterministic algorithms
+      ↓
+Structured evidence
+      ↓
+CONTEXTUAL INTERPRETATION
+      ↓
+Generative AI
+      ↓
+Explainable operational reasoning
+```
+
+## Algorithmic Design
+
+| Operation | Approach | Complexity |
+|---|---|---:|
+| Gate risk extraction | Direct deterministic computation | `O(1)` |
+| Report clustering | Ordered spatial/temporal grouping | approximately `O(n log n)` |
+| Incident priority operations | Binary heap | `O(log n)` insertion/extraction |
+| Responder routing algorithm | Heap-based weighted shortest path | `O((V + E) log V)` |
+| Live synchronization | Firestore `onSnapshot` | No polling |
+| Contextual reasoning | Gemini with deterministic fallback | Model used only where justified |
+
+The crowd-aware responder-routing infrastructure models an important operational fact: the geographically nearest responder is not always the fastest if the shortest corridor is heavily congested.
+
+Routing and priority modules are implemented and tested as algorithmic infrastructure; documentation does not claim live end-to-end integration where the runtime path has not been verified.
+
+## System Architecture
+
+```text
+Gate telemetry / CSV                    Public SOS
+        │                                  │
+        ▼                                  ▼
+     Firestore                          Firestore
+        │                                  │
+        ▼                                  ▼
+ Cloud Functions                    Cloud Functions
+        │                                  │
+        ▼                                  ▼
+computeGateRisk()                  clusterReports()
+        │                                  │
+        └──────────────┬───────────────────┘
+                       ▼
+              Structured operational facts
+                       │
+                       ▼
+            Gemini reasoning when required
+                       │
+              deterministic fallback
+                       │
+                       ▼
+              Operational documents
+                       │
+                       ▼
+             Firestore real-time sync
+                       │
+                       ▼
+                 Command Center
+```
 
 ## Technology Stack
 
 | Layer | Technology |
 |---|---|
-| Frontend | React, TypeScript, Vite |
+| Frontend | React + TypeScript + Vite |
 | Routing | React Router |
 | Realtime database | Firebase Firestore |
 | Authentication | Firebase Authentication |
@@ -135,147 +210,150 @@ Fan SOS report
 | CSV ingestion | PapaParse |
 | Unit testing | Jest |
 | End-to-end testing | Playwright |
-| Accessibility tooling | axe-core integration in development |
-| Hosting/deployment configuration | Firebase |
+| Hosting | Firebase Hosting |
 
----
+## Security
 
-## Algorithmic Design
+Aegis Grid separates public emergency reporting from privileged operational access.
 
-Aegis Grid avoids using GenAI for operations that deterministic algorithms can perform more reliably.
+Key security principles include:
 
-| Operation | Approach |
-|---|---|
-| Gate risk extraction | O(1) arithmetic |
-| Report clustering | Sort + spatial/temporal grouping |
-| Incident priority queue | Binary heap, O(log n) insertion/extraction |
-| Responder routing | Heap-based weighted shortest-path search |
-| Live synchronization | Firestore `onSnapshot`, avoiding polling |
-| Contextual operational reasoning | Gemini, with deterministic fallback paths |
+- Firebase Authentication for protected staff access;
+- Firestore Security Rules as the backend authorization boundary;
+- server-side Cloud Functions for privileged processing;
+- environment/secrets-based configuration;
+- defensive normalization and validation;
+- public SOS separated from private operational collections;
+- browser security headers through hosting configuration;
+- AI input/output treated as untrusted data across the reasoning boundary.
 
-The repository contains pure algorithm modules and dedicated tests for gate risk, report clustering, priority queues, and responder routing.
+See `SECURITY.md` for the full security architecture and hardening roadmap.
 
----
+## Testing
+
+Dedicated unit suites cover:
+
+- `computeGateRisk`
+- `clusterReports`
+- `priorityQueue`
+- `routeToResponder`
+
+Representative edge cases include:
+
+- invalid or zero capacity;
+- zero elapsed time;
+- stale readings;
+- over-capacity telemetry;
+- flat/negative crowd flow;
+- empty report sets;
+- spatially or temporally separated reports;
+- mixed-category clusters;
+- priority ordering/ties;
+- unreachable responders;
+- longer clear route vs shorter congested route.
+
+Playwright provides browser-level smoke/E2E coverage and an extensible base for broader workflow testing.
+
+## Accessibility
+
+Aegis Grid treats accessibility as an operational requirement.
+
+The interface is designed around:
+
+- semantic controls;
+- ARIA status messaging;
+- keyboard-operable interactions;
+- large emergency touch targets;
+- risk communicated with text/iconography as well as color;
+- responsive emergency reporting;
+- continued WCAG contrast and focus-state hardening.
+
+## Routes
+
+| Route | Access | Purpose |
+|---|---|---|
+| `/login` | Public | Organizer/staff authentication |
+| `/sos` | Public | Emergency signal submission |
+| `/dashboard` | Protected | Live command center |
+| `/incident/:id` | Protected | Incident evidence and reasoning |
+| `/upload` | Protected | External CSV ingestion |
+| `/audit` | Protected | Operational audit view |
 
 ## Project Structure
 
 ```text
 functions/
   src/
-    index.ts                 Firebase Cloud Function triggers and backend orchestration
-    lib/                     Backend algorithm/reasoning utilities and tests
+    index.ts
+    lib/
+      callReasoningModel.ts
+      clusterReports.ts
+      computeGateRisk.ts
+      priorityQueue.ts
+      reasoningPromptBuilder.ts
+      routeToResponder.ts
 
 scripts/
-  simulateGateReadings.ts    Synthetic real-time telemetry generator
+  simulateGateReadings.ts
 
 src/
   components/
-    auth/                    Staff authentication UI
-    dashboard/               Dashboard, map, risk, incidents, uploads, audit
-    shared/                  Shared route/auth protection
-    sos/                     Public emergency-reporting surface
+    auth/
+    dashboard/
+    shared/
+    sos/
   config/
-    firebase.ts              Firebase client initialization
   hooks/
-    useLiveFirestoreCollection.ts
-  lib/                       Deterministic algorithms, prompts, tests
-  store/                     Zustand state utilities
-  styles/                    Risk visualization styles
-  App.tsx                    Application routes
-  main.tsx                   React entry point
+  lib/
+  store/
+  styles/
 
 tests/
-  aegis-flow.spec.ts         Playwright smoke/E2E tests
+  aegis-flow.spec.ts
 
-firestore.rules              Firestore authorization rules
-firebase.json                Firebase hosting/functions/security-header config
+firestore.rules
+firestore.indexes.json
+firebase.json
+playwright.config.ts
 ```
 
-> Some algorithm modules exist in both frontend and Cloud Functions source trees because the browser and deployed Functions are separate TypeScript runtime/build environments.
+Some deterministic modules exist in both frontend and Cloud Functions source trees because the browser and deployed Functions are separate TypeScript runtime/build environments.
 
----
+## Evaluator Demo Flow
 
-## Key Routes
+1. Upload external gate telemetry through the CSV ingestion surface.
+2. Observe changing crowd-risk state in the Command Center.
+3. Submit related emergency reports through Public SOS.
+4. Observe incident evidence, fusion, severity/confidence, and reasoning.
+5. Open Incident Detail to inspect raw reports, provenance, map context, and operational state.
+6. Inspect the audit surface.
 
-| Route | Purpose |
-|---|---|
-| `/login` | Staff authentication |
-| `/dashboard` | Protected live command center |
-| `/incident/:id` | Detailed incident view |
-| `/upload` | External CSV data ingestion |
-| `/audit` | Operational audit view |
-| `/sos` | Public emergency-reporting interface |
+The central demonstration is:
 
----
+> **A stadium crisis should not be understood through one sensor, one report, or one threshold. Aegis Grid builds an explainable operational picture from multiple signals.**
 
-## Security Approach
+## Evolution Path
 
-The project applies security at multiple layers:
+The architecture supports incremental hardening and extension through:
 
-- protected staff routes through Firebase Authentication;
-- Firestore Security Rules separating public report creation from privileged operational reads;
-- server-side Cloud Functions for privileged processing;
-- environment-based Firebase configuration;
-- defensive normalization and validation in backend processing;
-- Firebase Hosting security headers including CSP-related controls, frame protection, and MIME-sniffing protection;
-- no requirement for a fan to access private incident collections when submitting an SOS report.
+- deeper live crowd-aware responder-routing integration;
+- richer cross-gate comparative reasoning;
+- stricter public report schema enforcement;
+- abuse protection and App Check;
+- expanded role-based authorization;
+- broader E2E/security/accessibility tests;
+- richer venue graph and responder telemetry integration.
 
-The public SOS surface is intentionally limited to emergency submission while operational data remains restricted.
+These are extensions of the current architecture rather than a redesign.
 
----
-
-## Testing
-
-The repository includes unit tests for the core deterministic algorithms:
-
-- `computeGateRisk.test.ts`
-- `clusterReports.test.ts`
-- `priorityQueue.test.ts`
-- `routeToResponder.test.ts`
-
-Examples of covered edge conditions include:
-
-- zero/invalid capacity;
-- zero-time intervals;
-- stale readings;
-- over-capacity sensor readings;
-- flat or negative crowd flow;
-- empty report sets;
-- reports separated by time/location;
-- mixed-category clusters;
-- priority ordering and tie behavior;
-- unreachable responder routes;
-- congestion-aware route selection.
-
-Playwright smoke tests also verify application boot and the public SOS route.
-
----
-
-## Accessibility
-
-Accessibility is treated as an operational requirement, especially because stadium interfaces may be used under pressure.
-
-The implementation includes or is designed around:
-
-- semantic controls;
-- ARIA labels/status messaging;
-- keyboard-operable interactions;
-- risk communication using text in addition to visual styling;
-- development-time axe-core support;
-- large emergency interaction targets on the SOS surface.
-
----
-
-## Running Locally
-
-### Frontend
+## Local Development
 
 ```bash
 npm install
 npm run dev
 ```
 
-Create the required Firebase environment variables in your local environment configuration:
+Required Firebase client environment configuration:
 
 ```text
 VITE_FIREBASE_API_KEY
@@ -286,7 +364,7 @@ VITE_FIREBASE_MESSAGING_SENDER_ID
 VITE_FIREBASE_APP_ID
 ```
 
-### Cloud Functions
+Cloud Functions:
 
 ```bash
 cd functions
@@ -294,20 +372,22 @@ npm install
 npm run build
 ```
 
-Configure server-side Gemini credentials through the deployment environment/secrets mechanism rather than committing secrets to source control.
+Server-side AI credentials must be configured through deployment environment/secrets mechanisms rather than committed to source control.
 
----
+## Design Principle
 
-## Design Philosophy
+```text
+SENSE
+  ↓
+CALCULATE
+  ↓
+CORRELATE
+  ↓
+REASON
+  ↓
+EXPLAIN
+  ↓
+ACT
+```
 
-Aegis Grid is not intended to be an all-purpose stadium super-app.
-
-Its scope is deliberately constrained:
-
-**One primary persona:** safety organizers.
-
-**Three connected operational verticals:** crowd management, real-time decisions, and operational intelligence.
-
-**One AI principle:** Generative AI should add reasoning where rules alone are insufficient — not replace reliable algorithms simply for the sake of using AI.
-
----
+**Aegis Grid — Predict earlier. Fuse signals. Explain decisions.**
